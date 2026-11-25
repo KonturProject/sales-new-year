@@ -8,7 +8,7 @@
 | Рейтинги людей | `src/engine/ranking.ts` |
 | Разбор выгрузок | `src/import` |
 | Пробная площадь (автопоказ, `?stats=1`) | `public/trial` |
-| Резка листов графики | `tools/slice.py` |
+| Сборка графики из листов | `tools/pack.py` |
 | Проверка перед коммитом и публикацией | `tools/audit-publish.mjs`, `tools/deploy-guard.mjs` |
 
 Тесты движка, перенесённые из ноябрьской игры, идут на ноябрьском календаре: `novemberConfig` в `src/engine/testkit.ts`.
