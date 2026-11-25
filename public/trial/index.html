@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<meta name="robots" content="noindex">
+<title>Новогодняя площадь (проба)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="game"></div>
+
+<header class="sign" id="sign">
+  <div class="sign-title">Новогодняя площадь</div>
+  <div class="sign-sub"><span id="day">1 декабря</span> · до Нового года <b id="left">30</b> дней</div>
+  <div class="tiers" id="tiers" aria-label="Ярусы ёлки"></div>
+</header>
+
+<div class="toast" id="toast" hidden></div>
+
+<nav class="panel" id="panel">
+  <div class="panel-row">
+    <span class="panel-label">Купить игрушку</span>
+    <span id="buyButtons" class="btns"></span>
+  </div>
+  <div class="panel-row">
+    <span class="panel-label">Время суток</span>
+    <span id="timeButtons" class="btns"></span>
+    <span class="panel-label">Показать</span>
+    <span class="btns">
+      <button data-act="attic">Чердак (6+)</button>
+      <button data-act="cellar">Подвал (20+)</button>
+      <button data-act="many">Неделя покупок</button>
+      <button data-act="garland">Зажечь гирлянду</button>
+      <button data-act="grinch">Пакость Гринча</button>
+      <button data-act="reset">Сначала</button>
+      <button data-act="hide">Спрятать панель</button>
+    </span>
+  </div>
+</nav>
+
+<script src="vendor/phaser.min.js"></script>
+<script type="module" src="main.js"></script>
+</body>
+</html>

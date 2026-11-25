@@ -1,0 +1,102 @@
+import { workingDaysBetween } from './calendar';
+import type { Config } from './config';
+import { groupOn, isPresent, levelOn, type Absence, type Employee } from './staff';
+import type { DateStr, GroupCode } from './types';
+
+/** Показатели воронки сотрудника за день: качественные счета и разговоры от 20 минут. */
+export interface FunnelDay {
+  employeeId: string;
+  date: DateStr;
+  quality: number;
+  long: number;
+}
+
+export interface DayResult {
+  group: GroupCode;
+  date: DateStr;
+  normQuality: number;
+  normLong: number;
+  factQuality: number;
+  factLong: number;
+  /** норма длинных задана (>0): иначе кучка не начисляется и аптечка не выдаётся */
+  longRequired: boolean;
+  longMet: boolean;
+  qualityMet: boolean;
+}
+
+export function evaluateDay(
+  group: GroupCode, date: DateStr, staff: Employee[], absences: Absence[], funnel: FunnelDay[], cfg: Config,
+): DayResult {
+  const present = staff.filter((e) => groupOn(e, date) === group && isPresent(e, date, absences));
+  // нормы дробные (до 0,01): копим в целых сотых, чтобы 0,1 + 0,2 не давали ошибок округления
+  let qualityCents = 0, longCents = 0, factQuality = 0, factLong = 0;
+  for (const e of present) {
+    const n = cfg.norms[levelOn(e, date)];
+    qualityCents += Math.round(n.quality * 100);
+    longCents += Math.round(n.long * 100);
+    for (const row of funnel) {
+      if (row.employeeId === e.id && row.date === date) { factQuality += row.quality; factLong += row.long; }
+    }
+  }
+  return {
+    group, date, normQuality: qualityCents / 100, normLong: longCents / 100, factQuality, factLong,
+    longRequired: longCents > 0,
+    longMet: longCents > 0 && factLong * 100 >= longCents,
+    qualityMet: qualityCents > 0 && factQuality * 100 >= qualityCents,
+  };
+}
+
+const gameDaysCache = new WeakMap<Config, number>();
+const gameWorkingDays = (cfg: Config): number => {
+  let n = gameDaysCache.get(cfg);
+  if (n === undefined) gameDaysCache.set(cfg, (n = workingDaysBetween(cfg.startDate, cfg.endDate, cfg).length));
+  return n;
+};
+
+/**
+ * План оплат сотрудника на рабочий день в сотых, дробно (округляет тот, кто складывает): личный план на месяц × запас /
+ * рабочих дней игры, а без личного плана — норма «оплат в день» его уровня. Присутствие не проверяет.
+ */
+export function employeePlanCents(e: Employee, date: DateStr, cfg: Config): number {
+  if (typeof e.paymentPlan === 'number') return (e.paymentPlan * cfg.personalPlanPercent) / Math.max(1, gameWorkingDays(cfg));
+  return Math.round(cfg.norms[levelOn(e, date)].payments * 100);
+}
+
+/** План оплат группы на день в сотых оплаты (дробно): сумма планов присутствующих сотрудников группы. */
+export function paymentPlanCents(group: GroupCode, date: DateStr, staff: Employee[], absences: Absence[], cfg: Config): number {
+  let cents = 0;
+  for (const e of staff) {
+    if (groupOn(e, date) === group && isPresent(e, date, absences)) cents += employeePlanCents(e, date, cfg);
+  }
+  return cents;
+}
+
+export interface GroupPlan {
+  /** план оплат группы на все рабочие дни игры, в целых сотых */
+  gameCents: number;
+  /** план на день asOf, в целых сотых: от него сытость */
+  dayCents: number;
+}
+
+/** План оплат группы: на игру (по нормам каждого дня, `cfgOn`) и на день asOf. Нужен стадиям роста и сытости. */
+export function groupPlan(
+  group: GroupCode, asOf: DateStr, staff: Employee[], absences: Absence[], cfgOn: (d: DateStr) => Config, cfg: Config,
+): GroupPlan {
+  let gameCents = 0;
+  for (const d of workingDaysBetween(cfg.startDate, cfg.endDate, cfg)) gameCents += paymentPlanCents(group, d, staff, absences, cfgOn(d));
+  // дробные сотые округляются один раз: иначе 20 дней по 31,5 дали бы 6,4 оплаты вместо 6,3
+  return { gameCents: Math.round(gameCents), dayCents: Math.round(paymentPlanCents(group, asOf, staff, absences, cfgOn(asOf))) };
+}
+
+/** Нормы группы на весь месяц: сумма норм присутствующих по всем рабочим дням игры (нормы каждого дня — `cfgOn`). */
+export function groupNorms(
+  group: GroupCode, staff: Employee[], absences: Absence[], cfgOn: (d: DateStr) => Config, cfg: Config,
+): { quality: number; long: number } {
+  let quality = 0, long = 0;
+  for (const d of workingDaysBetween(cfg.startDate, cfg.endDate, cfg)) {
+    const r = evaluateDay(group, d, staff, absences, [], cfgOn(d));
+    quality += Math.round(r.normQuality * 100);
+    long += Math.round(r.normLong * 100);
+  }
+  return { quality: quality / 100, long: long / 100 };
+}

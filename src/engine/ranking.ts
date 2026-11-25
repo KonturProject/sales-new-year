@@ -1,0 +1,164 @@
+import type { Config } from './config';
+import type { FunnelDay } from './evaluate';
+import { countsInRating, groupOn, levelOn, type Absence, type Employee } from './staff';
+import type { DateStr, GroupCode } from './types';
+
+/** Оплата сотрудника: один уникальный счёт. */
+export interface PaymentRow {
+  employeeId: string;
+  date: DateStr;
+  invoice: string;
+}
+
+export interface RankRow {
+  employeeId: string;
+  name: string;
+  group: GroupCode;
+  /** ничья делит место: 1, 1, 3 */
+  place: number;
+  value: number;
+  /** у героев дня: факты воронки за день и нормы дня */
+  facts?: HeroFacts;
+}
+
+export interface HeroFacts {
+  quality: number;
+  long: number;
+  normQuality: number;
+  normLong: number;
+}
+
+export interface RankData {
+  staff: Employee[];
+  absences: Absence[];
+  payments: PaymentRow[];
+  funnel: FunnelDay[];
+  /** ручные правки оплат (в рейтинг идут по тем же правилам, что обычные оплаты) */
+  paymentCorrections?: { employeeId: string; date: DateStr; delta: number }[];
+  /** настройки на «сегодня» расчёта */
+  cfg: Config;
+  /** настройки на дату (нормы меняются с даты); без неё везде действует `cfg` */
+  cfgOn?: (date: DateStr) => Config;
+}
+
+interface Scored {
+  e: Employee;
+  group: GroupCode;
+  value: number;
+  /** добавочный критерий при равенстве value */
+  tie: number;
+  facts?: HeroFacts;
+}
+
+function rank(items: Scored[], n?: number): RankRow[] {
+  const sorted = [...items].sort(
+    (a, b) => b.value - a.value || b.tie - a.tie || a.e.name.localeCompare(b.e.name, 'ru'),
+  );
+  let place = 0;
+  const rows = sorted.map((s, i) => {
+    const prev = sorted[i - 1];
+    if (!prev || prev.value !== s.value || prev.tie !== s.tie) place = i + 1;
+    return { employeeId: s.e.id, name: s.e.name, group: s.group, place, value: s.value, ...(s.facts && { facts: s.facts }) };
+  });
+  return n === undefined ? rows : rows.slice(0, n);
+}
+
+/**
+ * Один счёт — одна строка: самая ранняя дата, при равенстве — меньший `tieKey`; при полном равенстве остаётся
+ * первая. Результат не зависит от порядка входа. Возвращаются исходные объекты.
+ */
+export function uniqueInvoices<T extends { date: DateStr; invoice: string }>(rows: T[], tieKey: (r: T) => string): T[] {
+  const first = new Map<string, T>();
+  for (const p of rows) {
+    const cur = first.get(p.invoice);
+    if (!cur || p.date < cur.date || (p.date === cur.date && tieKey(p) < tieKey(cur))) first.set(p.invoice, p);
+  }
+  return [...first.values()];
+}
+
+/**
+ * Засчитанные в рейтинг оплаты за период: сотрудник → группа на дату оплаты → число уникальных счетов.
+ * Один счёт — одна оплата (`uniqueInvoices`: ранняя дата, при равенстве меньший id сотрудника), и только
+ * потом проверяются окно и право на рейтинг. Оплата, сделанная в день отсутствия или скрытым сотрудником,
+ * в рейтинг не идёт (группе она всё равно засчитана), а дубль того же счёта её не оживляет.
+ * Ручные правки оплат (`paymentCorrections`) идут по тем же условиям: дата в окне, сотрудник в рейтинге в день
+ * правки, группа — на этот день. Итог сотрудника по группе за период не бывает меньше 0.
+ */
+function countedPayments(d: RankData, from: DateStr, to: DateStr): Map<string, Map<GroupCode, number>> {
+  const byId = new Map(d.staff.map((e) => [e.id, e]));
+  const result = new Map<string, Map<GroupCode, number>>();
+  const add = (e: Employee, date: DateStr, n: number) => {
+    const g = groupOn(e, date);
+    const groups = result.get(e.id) ?? new Map<GroupCode, number>();
+    groups.set(g, (groups.get(g) ?? 0) + n);
+    result.set(e.id, groups);
+  };
+  for (const p of uniqueInvoices(d.payments, (r) => r.employeeId)) {
+    if (p.date < from || p.date > to) continue;
+    const e = byId.get(p.employeeId);
+    if (e && countsInRating(e, p.date, d.absences)) add(e, p.date, 1);
+  }
+  for (const c of d.paymentCorrections ?? []) {
+    if (c.date < from || c.date > to) continue;
+    const e = byId.get(c.employeeId);
+    if (e && countsInRating(e, c.date, d.absences)) add(e, c.date, c.delta);
+  }
+  for (const groups of result.values()) {
+    for (const [g, n] of groups) if (n < 0) groups.set(g, 0);
+  }
+  return result;
+}
+
+/** Рейтинг группы за период: участники группы на дату `to` (даже с нулём) и все, кто набрал очки в группе. */
+export function groupRanking(group: GroupCode, from: DateStr, to: DateStr, d: RankData): RankRow[] {
+  const counted = countedPayments(d, from, to);
+  const items: Scored[] = [];
+  for (const e of d.staff) {
+    const value = counted.get(e.id)?.get(group) ?? 0;
+    if (!countsInRating(e, to, d.absences)) continue;
+    if (value > 0 || groupOn(e, to) === group) items.push({ e, group, value, tie: 0 });
+  }
+  return rank(items);
+}
+
+/** Общий топ по всем группам; сотрудники без засчитанных оплат не показываются. */
+export function topOverall(from: DateStr, to: DateStr, d: RankData, n = 10): RankRow[] {
+  const counted = countedPayments(d, from, to);
+  const items: Scored[] = [];
+  for (const e of d.staff) {
+    const groups = counted.get(e.id);
+    const value = groups ? [...groups.values()].reduce((a, b) => a + b, 0) : 0;
+    if (value > 0 && countsInRating(e, to, d.absences)) items.push({ e, group: groupOn(e, to), value, tie: 0 });
+  }
+  return rank(items, n);
+}
+
+/**
+ * Герои дня: процент выполнения личной нормы (качественные и длинные по воронке, перевыполнение одной
+ * не закрывает другую), при равенстве — больше оплат за день. Нулевой результат не показывается.
+ */
+export function heroesOfDay(date: DateStr, d: RankData, n = 10): RankRow[] {
+  const payments = countedPayments(d, date, date);
+  const funnel = new Map<string, { quality: number; long: number }>();
+  for (const row of d.funnel) {
+    if (row.date !== date) continue;
+    const acc = funnel.get(row.employeeId) ?? { quality: 0, long: 0 };
+    acc.quality += row.quality;
+    acc.long += row.long;
+    funnel.set(row.employeeId, acc);
+  }
+  const items: Scored[] = [];
+  for (const e of d.staff) {
+    if (!countsInRating(e, date, d.absences)) continue;
+    const norm = (d.cfgOn?.(date) ?? d.cfg).norms[levelOn(e, date)];
+    const total = norm.quality + norm.long;
+    const fact = funnel.get(e.id);
+    if (total === 0 || !fact) continue;
+    const done = Math.min(fact.quality, norm.quality) + Math.min(fact.long, norm.long);
+    const value = Math.round((done / total) * 100);
+    if (value === 0) continue;
+    const tie = [...(payments.get(e.id)?.values() ?? [])].reduce((a, b) => a + b, 0);
+    items.push({ e, group: groupOn(e, date), value, tie, facts: { ...fact, normQuality: norm.quality, normLong: norm.long } });
+  }
+  return rank(items, n);
+}

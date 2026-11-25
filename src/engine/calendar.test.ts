@@ -1,0 +1,65 @@
+import { describe, expect, test } from 'vitest';
+import { novemberConfig as defaultConfig } from './testkit';
+import { isWorkingDay, moscowToday, prevWorkingDay, nextWorkingDay, addDays, parseDate, workingDaysBetween } from './calendar';
+
+const cfg = defaultConfig;
+
+describe('calendar', () => {
+  test('нерабочие дни из спеки', () => {
+    expect(isWorkingDay('2026-11-04', cfg)).toBe(false);
+    expect(isWorkingDay('2026-11-05', cfg)).toBe(true);
+    expect(isWorkingDay('2026-11-08', cfg)).toBe(false);
+    expect(isWorkingDay('2026-11-21', cfg)).toBe(false);
+    expect(isWorkingDay('2026-11-28', cfg)).toBe(false);
+    expect(isWorkingDay('2026-11-29', cfg)).toBe(false);
+    expect(isWorkingDay('2026-11-30', cfg)).toBe(true);
+  });
+  test('вне периода игры день нерабочий', () => {
+    expect(isWorkingDay('2026-11-01', cfg)).toBe(false);
+    expect(isWorkingDay('2026-12-01', cfg)).toBe(false);
+  });
+  test('prevWorkingDay: после праздника и выходных', () => {
+    expect(prevWorkingDay('2026-11-09', cfg)).toBe('2026-11-06');
+    expect(prevWorkingDay('2026-11-05', cfg)).toBe('2026-11-03');
+  });
+  test('nextWorkingDay', () => {
+    expect(nextWorkingDay('2026-11-03', cfg)).toBe('2026-11-05');
+    expect(nextWorkingDay('2026-11-06', cfg)).toBe('2026-11-09');
+  });
+  test('addDays через границу месяца', () => {
+    expect(addDays('2026-11-30', 1)).toBe('2026-12-01');
+  });
+  test('workingDaysBetween включает обе границы', () => {
+    expect(workingDaysBetween('2026-11-02', '2026-11-09', cfg)).toEqual(
+      ['2026-11-02', '2026-11-03', '2026-11-05', '2026-11-06', '2026-11-09']);
+  });
+  test('20 рабочих дней за игру (02–30.11: 29 дней минус 8 выходных и 4.11)', () => {
+    expect(workingDaysBetween(cfg.startDate, cfg.endDate, cfg)).toHaveLength(20);
+  });
+});
+
+describe('moscowToday', () => {
+  test('берёт дату по Москве (UTC+3), а не по UTC', () => {
+    expect(moscowToday(new Date('2026-11-12T10:00:00+03:00'))).toBe('2026-11-12');
+    expect(moscowToday(new Date('2026-11-11T21:30:00Z'))).toBe('2026-11-12'); // 00:30 в Москве
+    expect(moscowToday(new Date('2026-11-12T20:59:59Z'))).toBe('2026-11-12'); // 23:59:59 в Москве
+    expect(moscowToday(new Date('2026-11-12T21:00:00Z'))).toBe('2026-11-13');
+  });
+  test('без аргумента возвращает корректную дату', () => {
+    expect(moscowToday()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
+describe('мусорные даты не вешают расчёт', () => {
+  test('workingDaysBetween не идёт дальше конца игры, даже если `to` — не дата', () => {
+    const all = workingDaysBetween(cfg.startDate, cfg.endDate, cfg);
+    expect(workingDaysBetween(cfg.startDate, 'today', cfg)).toEqual(all);
+    expect(workingDaysBetween(cfg.startDate, '9999-12-31', cfg)).toEqual(all);
+  });
+  test('parseDate принимает только существующий день в формате yyyy-MM-dd', () => {
+    expect(parseDate('2026-11-12', '2026-11-02')).toBe('2026-11-12');
+    for (const bad of [null, '', 'today', '2026-11-1', '2026-13-01', '2026-02-30', '12.11.2026', '+010000-01-01']) {
+      expect(parseDate(bad, '2026-11-02')).toBe('2026-11-02');
+    }
+  });
+});

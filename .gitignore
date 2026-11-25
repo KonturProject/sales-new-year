@@ -1,0 +1,17 @@
+node_modules
+dist
+work/
+refs/
+mockup/
+art/source/
+.superpowers/
+*.xlsx
+*.xls
+*.zip
+.env*
+# снимки и файлы со штатом — только вне репозитория
+*.private.json
+__pycache__/
+
+# спека, план и памятки с показателями групп — только локально: публично обещаны картинки и код, без данных
+docs/superpowers/
