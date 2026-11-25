@@ -1,11 +1,11 @@
-# Публикация сайта на GitHub Pages при каждом пуше в master.
+# Публикация сайта на GitHub Pages при каждом пуше в main.
 # Адрес бэкенда (Apps Script, …/exec) берётся из переменной репозитория BACKEND_URL (Settings → Secrets and variables → Actions → Variables).
 # Это не секрет: он всё равно виден в JS страницы. PIN сюда не попадает никогда.
 name: Pages
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
