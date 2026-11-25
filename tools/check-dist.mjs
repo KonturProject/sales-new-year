@@ -1,5 +1,5 @@
 // Проверка собранного сайта так, как его увидят на GitHub Pages: продакшен-сборка (не dev-сервер Vite) лежит под
-// подпутём /sales-pets/ и открывается с хоста, который не localhost. Бэкенд — мок, исполняющий настоящий Code.gs.
+// подпутём /sales-new-year/ и открывается с хоста, который не localhost. Бэкенд — мок, исполняющий настоящий Code.gs.
 // Две сборки: с вшитым адресом бэкенда (VITE_BACKEND_URL) и без него. PIN в вывод не попадает. Запуск: npm run check:dist
 import { spawnSync } from 'node:child_process';
 import { createReadStream, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
@@ -21,7 +21,7 @@ const browserPath = [
 if (!browserPath) throw new Error('Не найден Chrome/Edge: задайте CHROME_PATH');
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const PREFIX = '/sales-pets/';
+const PREFIX = '/sales-new-year/';
 /** Chrome считает *.localhost безопасным контекстом (как https на github.io) и сам ведёт его на loopback; от `localhost` хост отличается, как и github.io. */
 const SITE_HOST = 'pets.localhost';
 const GROUP_CODES = ['СР1', 'СР2', 'СР3', 'СР5', 'СР6', 'СР9'];
@@ -225,4 +225,4 @@ if (failures.length) {
   console.error(`FAIL (${failures.length}):\n- ${failures.join('\n- ')}`);
   process.exit(1);
 }
-console.log('OK: собранный сайт под /sales-pets/ — номер сборки, экран, до старта, админка (чанк xlsx), РГ, чужой ?backend=, сборка без бэкенда');
+console.log('OK: собранный сайт под /sales-new-year/ — номер сборки, экран, до старта, админка (чанк xlsx), РГ, чужой ?backend=, сборка без бэкенда');
