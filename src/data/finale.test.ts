@@ -39,4 +39,20 @@ describe('finaleOf: финал по снимку и отсечке', () => {
     expect(r.branch.toys).toBe(2);
     expect(r.best['СР2']).toEqual({ employeeIds: ['e1'], value: 4 });
   });
+
+  test('платёжки 30.12 (после отсечки 29.12) не трогают ни звезду, ни номинации, ни «Неделю года»', () => {
+    const base = world();
+    const late = { ...base, provisional: [{ date: '2026-12-30', group: 'СР9' as const, count: 40 }] };
+    const a = finaleOf(base, '2026-12-29');
+    const b = finaleOf(late, '2026-12-29');
+    expect(b.winners).toEqual(a.winners);
+    expect(b.nominations).toEqual(a.nominations);
+    expect(b.branch).toEqual(a.branch);
+  });
+
+  test('отсечка раньше загрузки (24.12 при оплатах по 29.12): оплаты 28–29.12 не попадают в «Неделю года»', () => {
+    const base = world();
+    const late = { ...base, payments: [...base.payments, ...pay('СР9', 'Тест e5', 30, '2026-12-28')] };
+    expect(finaleOf(late, '2026-12-24').nominations).toEqual(finaleOf(base, '2026-12-24').nominations);
+  });
 });

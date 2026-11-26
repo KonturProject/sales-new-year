@@ -838,3 +838,11 @@ button.danger {
   font-family: ui-monospace, monospace;
   font-size: 0.85em;
 }
+
+@media (max-width: 760px) {
+  /* десять вкладок на телефоне — в несколько строк: выбранная всегда видна */
+  [role='tablist'] {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+}

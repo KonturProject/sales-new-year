@@ -3,12 +3,38 @@ import { GROUPS, type DateStr, type GroupCode } from '@/engine/types';
 import type { Snapshot } from './api';
 import { buildFacts } from './facts';
 
+const clippedCache = new WeakMap<Snapshot, Map<DateStr, Snapshot>>();
+
 /**
- * Финал по снимку: оплаты по `cutoff` включительно, план у всех полный (за всю игру), игрушки и вещи — как стоят сейчас.
+ * Снимок без фактов позже отсечки: оплаты, предварительные числа, воронка и правки — по `cutoff` включительно.
+ * Иначе недельные проценты («Неделя года») увидели бы дни после отсечки. Копия на пару «снимок, дата» одна.
+ */
+function clip(s: Snapshot, cutoff: DateStr): Snapshot {
+  let byDate = clippedCache.get(s);
+  if (!byDate) clippedCache.set(s, (byDate = new Map()));
+  let c = byDate.get(cutoff);
+  if (!c) {
+    const upTo = <T extends { date: DateStr }>(list: T[]) => list.filter((x) => x.date <= cutoff);
+    c = {
+      ...s,
+      payments: upTo(s.payments),
+      provisional: upTo(s.provisional),
+      funnel: upTo(s.funnel),
+      corrections: s.corrections && upTo(s.corrections),
+      paymentsImportedThrough: s.paymentsImportedThrough && s.paymentsImportedThrough > cutoff ? cutoff : s.paymentsImportedThrough,
+      funnelThrough: s.funnelThrough && s.funnelThrough > cutoff ? cutoff : s.funnelThrough,
+    };
+    byDate.set(cutoff, c);
+  }
+  return c;
+}
+
+/**
+ * Финал по снимку: факты по `cutoff` включительно, план у всех полный (за всю игру), игрушки и вещи — как стоят сейчас.
  * Общий для предпросмотра в админке и церемонии на экране.
  */
 export function finaleOf(s: Snapshot, cutoff: DateStr): FinaleResult {
-  const f = buildFacts(s, cutoff);
+  const f = buildFacts(clip(s, cutoff), cutoff);
   const by = <T>(fn: (g: GroupCode) => T) => Object.fromEntries(GROUPS.map((g) => [g, fn(g)])) as Record<GroupCode, T>;
   return finale({
     cutoff,

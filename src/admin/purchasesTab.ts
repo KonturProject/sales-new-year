@@ -70,13 +70,20 @@ export async function purchasesTab(ctx: AdminCtx): Promise<HTMLElement> {
       return;
     }
     if (!(await ask(`Отменить ${text}? Вещь уйдёт с площади, валюта вернётся группе, место освободится. Запись останется в журнале с причиной.`, 'Отменить покупку'))) return;
-    try {
-      await ctx.session.call('cancelPurchase', plan.body);
+    const done = async () => {
       await load();
       paintList();
       paintGrants();
       listStatus.textContent = `Покупка №${id} отменена`;
+    };
+    try {
+      await ctx.session.call('cancelPurchase', plan.body);
+      await done();
     } catch (e) {
+      // ответ мог потеряться после записи: повтор тогда отказ, а покупка уже отменена — проверяем по свежему снимку
+      try {
+        if ((await ctx.snapshot()).purchases.some((p) => p.id === id && p.cancelledAt !== null)) return void (await done());
+      } catch { /* остаётся исходная ошибка */ }
       listAlert.textContent = errorText(e);
     }
   }

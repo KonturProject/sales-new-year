@@ -288,6 +288,12 @@ try {
     await answerYes(page);
     await waitForText(page, '[data-status="finale"]', 'отменён');
     check((await snapshotOf(mock)).finale === null, 'финал не отменён');
+    // после отмены лавка открыта: монет на подарок выдаём на моке и покупаем
+    const post = async (body) => (await fetch(mock.url, { method: 'POST', headers: { 'content-type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) })).json();
+    const granted = await post({ action: 'grant', pin: MOCK_ADMIN_PIN, group: 'СР1', kind: 'coins', delta: 50, reason: 'проверка лавки', ref: 'check-grant-after-clear' });
+    check(granted.ok === true, `выдача на моке: ${granted.error}`);
+    const again = await post({ action: 'buy', group: 'СР1', groupPin: mock.groupPins['СР1'], shop: 'gift', item: 101, ref: 'check-after-clear' });
+    check(again.ok === true, `покупка после отмены финала: ${again.error}`);
   });
 } finally {
   await browser.close();
