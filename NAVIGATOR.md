@@ -16,6 +16,10 @@
 | Админка: импорт воронки и оплат, что изменит загрузка | `src/admin/{importTab,importPlan,importPreview,effects}.ts` |
 | Админка: сотрудники, JSON штата с отсутствиями | `src/admin/{staffTab,staffForm}.ts` |
 | Админка: нормы, выходные, предпросмотр | `src/admin/{normsTab,configForm,configPreview,calendarForm,holidaysBlock}.ts` |
+| Админка: покупки (отмена с причиной), выдача валюты | `src/admin/{purchasesTab,purchases}.ts` |
+| Админка: Гринч (кнопки, «Сам по себе», тишина) | `src/admin/{grinchTab,grinch}.ts` |
+| Админка: сцены на экранах, ссылка и смена ключа экрана | `src/admin/{screenTab,screen}.ts` |
+| Админка: финал (отсечка, предпросмотр, провести, отменить) | `src/admin/{finaleTab,finale}.ts`, `src/data/finale.ts` |
 | Админка: PIN групп | `src/admin/{pins,pinForm}.ts` |
 | Сервер (Apps Script) и его тесты | `apps-script/Code.gs`, `apps-script/test` |
 | Мок сервера на настоящем `Code.gs` | `tools/mock-backend.mjs` |

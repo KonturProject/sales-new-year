@@ -19,7 +19,7 @@ const OUT = process.env.OUT;
 if (OUT) mkdirSync(OUT, { recursive: true });
 /** Слова «Питомцев», которых в админке площади быть не должно. */
 const PET_WORDS = /питом|кучк|аптечк|вылупл|яйц|скуча|погиб/i;
-const TABS = ['results', 'payments', 'import', 'staff', 'norms', 'pins'];
+const TABS = ['results', 'payments', 'import', 'staff', 'norms', 'purchases', 'grinch', 'screen', 'finale', 'pins'];
 const failures = [];
 
 const server = await createServer({ logLevel: 'error', server: { port: 0 } });
@@ -76,6 +76,16 @@ const textOf = (page, selector) => page.$eval(selector, (e) => e.textContent ?? 
 async function waitForText(page, selector, needle, timeout = 15_000) {
   await page.waitForFunction(([sel, text]) => [...document.querySelectorAll(sel)].some((e) => e.textContent?.includes(text)), [selector, needle], { timeout }).catch(() => {});
   return (await page.$$eval(selector, (es) => es.map((e) => e.textContent ?? '').join(' | ')).catch(() => ''));
+}
+/** Снимок мока с ключом экрана (по умолчанию — ключ мока). */
+const snapshotOf = async (mock, key = MOCK_SCREEN_KEY) => (await fetch(`${mock.url}?k=${encodeURIComponent(key)}`)).json();
+/** Ответ «Да» в окне вопроса: раньше 500 мс щелчок не засчитывается. */
+async function answerYes(page) {
+  const dialog = await page.waitForSelector('dialog.ask[open]', { timeout: 10_000 });
+  await page.waitForTimeout(600);
+  await (await dialog.$('[data-ask="yes"]')).click();
+  // следующий вопрос может открыться сразу: ждём ухода именно этого окна
+  await page.waitForFunction((el) => !el.isConnected, dialog, { timeout: 10_000 });
 }
 const upload = (page, id, name, mimeType, buffer) => page.setInputFiles(`input[data-file="${id}"]`, { name, mimeType, buffer: Buffer.from(buffer) });
 
@@ -162,6 +172,122 @@ try {
     const snap = await (await fetch(`${mock.url}?k=${MOCK_SCREEN_KEY}`)).json();
     const id = snap.staff?.find((e) => e.name === 'Тест Новогодний')?.id;
     check(Boolean(id) && snap.absences?.some((a) => a.employeeId === id && a.kind === 'vacation' && a.from === '2026-12-14' && a.to === '2026-12-18'), 'в снимке нет отсутствия');
+  });
+
+  await scenario('покупки: отмена только с причиной, причина не уходит в публичный снимок; выдача −5 показывает «станет»', async ({ page, check, url, mock }) => {
+    await login(page, url);
+    await openTab(page, 'purchases');
+    const first = page.locator('[data-cancel-open]').first();
+    check(await first.count() === 1, 'нет покупок с кнопкой отмены');
+    const id = Number(await first.getAttribute('data-cancel-open'));
+    await first.click();
+    await page.click(`form[data-cancel="${id}"] button[type="submit"]`);
+    check((await waitForText(page, '[data-alert="cancel"]', 'причину')).includes('Напишите причину'), 'отмена без причины прошла');
+    check(!(await page.$('dialog.ask[open]')), 'без причины открылся вопрос');
+    const reason = 'Проверка отмены Q7Z';
+    await page.fill(`input[data-cancel-reason="${id}"]`, reason);
+    await page.click(`form[data-cancel="${id}"] button[type="submit"]`);
+    await page.waitForSelector('dialog.ask[open]');
+    await page.click('dialog.ask [data-ask="yes"]'); // сразу — не засчитывается
+    check(Boolean(await page.$('dialog.ask[open]')), 'ранний щелчок «Да» засчитался');
+    await page.waitForTimeout(600);
+    await page.click('dialog.ask [data-ask="yes"]');
+    const st = await waitForText(page, '[data-status="cancel"]', 'отменена');
+    check(st.includes(`Покупка №${id} отменена`), `отмена: ${st}`);
+    check((await textOf(page, `li[data-purchase="${id}"] .note`)).includes(reason), 'в журнале нет причины');
+    const pub = await snapshotOf(mock);
+    check(pub.purchases.find((x) => x.id === id)?.cancelledAt, 'в снимке покупка не отменена');
+    check(!JSON.stringify(pub).includes(reason), 'причина отмены попала в публичный снимок');
+
+    await page.selectOption('[data-grant="group"]', 'СР2');
+    await page.selectOption('[data-grant="kind"]', 'flakes');
+    await page.fill('[data-grant="delta"]', '-5');
+    await page.fill('[data-grant="reason"]', 'Проверка выдачи W3');
+    const preview = await textOf(page, '[data-grant-preview]');
+    check(/^Станет: СР2: снежинки \S+ → \S+/.test(preview), `станет: ${preview}`);
+    await page.click('form[data-grant-form] button[type="submit"]');
+    await answerYes(page);
+    check((await waitForText(page, '[data-status="grant"]', 'Готово')).includes('Готово'), 'выдача не записалась');
+    const after = await snapshotOf(mock);
+    check(after.grants.some((g) => g.group === 'СР2' && g.kind === 'flakes' && g.delta === -5), 'в снимке нет выдачи');
+    check(!JSON.stringify(after).includes('Проверка выдачи W3'), 'причина выдачи попала в публичный снимок');
+  });
+
+  await scenario('Гринч: тишина 29 и 481 — отказ, 30 и 480 — сохраняются; кнопка «Украсть»', async ({ page, check, url, mock }) => {
+    await login(page, url);
+    await openTab(page, 'grinch');
+    const save = async (v) => {
+      await page.fill('[data-grinch-quiet]', String(v));
+      await page.click('form[data-grinch-settings] button[type="submit"]');
+    };
+    for (const bad of [29, 481]) {
+      await save(bad);
+      check((await waitForText(page, '[data-alert="grinch"]', 'Тишина')).includes('от 30 до 480'), `тишина ${bad} принята`);
+    }
+    for (const ok of [30, 480]) {
+      await save(ok);
+      await waitForText(page, '[data-status="grinch"]', 'сохранены');
+      check((await snapshotOf(mock)).grinch.quietMin === ok, `тишина ${ok} не сохранилась`);
+    }
+    await page.click('[data-grinch="steal"]');
+    await waitForText(page, '[data-status="grinch"]', 'отправлено');
+    check((await snapshotOf(mock)).grinch.commands.at(-1)?.kind === 'steal', 'команда «Украсть» не дошла');
+    await page.selectOption('[data-snowball-group]', 'СР6');
+    await page.click('[data-snowball]');
+    await waitForText(page, '[data-status="grinch"]', 'Снежок');
+    check((await snapshotOf(mock)).commands.some((c) => c.kind === 'snowball' && c.group === 'СР6'), 'снежок не дошёл');
+  });
+
+  await scenario('экран: салют, ссылка с ключом, новый ключ — старый не читает, админка работает', async ({ page, check, url, mock }) => {
+    await login(page, url);
+    await openTab(page, 'screen');
+    await page.click('[data-screen="salute"]');
+    await waitForText(page, '[data-status="screen"]', 'Салют');
+    check((await snapshotOf(mock)).commands.some((c) => c.kind === 'salute'), 'салют не дошёл');
+    await page.click('[data-show-link]');
+    const link = await page.inputValue('[data-screen-link] input');
+    check(link.endsWith(`#k=${MOCK_SCREEN_KEY}`) && !link.includes('admin.html'), 'ссылка экрана не та');
+    await page.click('[data-new-key]');
+    await answerYes(page);
+    await page.waitForFunction((old) => {
+      const v = document.querySelector('[data-screen-link] input')?.value ?? '';
+      return v.includes('#k=') && !v.endsWith(old);
+    }, MOCK_SCREEN_KEY, { timeout: 15_000 });
+    const fresh = decodeURIComponent((await page.inputValue('[data-screen-link] input')).split('#k=')[1] ?? '');
+    check((await snapshotOf(mock)).error === 'key', 'старый ключ всё ещё читает снимок');
+    check(Array.isArray((await snapshotOf(mock, fresh)).staff), 'новый ключ не читает снимок');
+    for (const id of TABS) {
+      await openTab(page, id);
+      const alert = await page.$$eval('[role="tabpanel"] [role="alert"]', (es) => es.filter((e) => e.checkVisibility()).map((e) => e.textContent?.trim() ?? '').filter(Boolean).join(' | '));
+      check(alert === '', `после смены ключа вкладка ${id}: ${alert}`);
+    }
+  });
+
+  await scenario('финал: дата позже импорта не проходит; провести (два вопроса) — покупка отклонена; отменить — снова можно', async ({ page, check, url, mock }) => {
+    await login(page, url);
+    await openTab(page, 'finale');
+    const through = (await snapshotOf(mock)).paymentsImportedThrough;
+    check(await page.inputValue('[data-finale-cutoff]') === through, 'по умолчанию не дата последней загрузки');
+    await page.fill('[data-finale-cutoff]', '2026-12-29');
+    check((await textOf(page, '[data-finale-preview]')).includes('Не позже последней загрузки оплат'), 'дата позже импорта принята');
+    check(await page.isDisabled('[data-finale-run]'), 'кнопка финала активна при плохой дате');
+    await page.fill('[data-finale-cutoff]', through);
+    const preview = await textOf(page, '[data-finale-preview]');
+    check(/Звезд/.test(preview) && /Лучший план — /.test(preview), `предпросмотр: ${preview.slice(0, 160)}`);
+    await page.click('[data-finale-run]');
+    await answerYes(page);
+    await answerYes(page);
+    await waitForText(page, '[data-status="finale"]', 'проведён');
+    check((await snapshotOf(mock)).finale?.cutoff === through, 'финал не записан');
+    const buy = await (await fetch(mock.url, {
+      method: 'POST', headers: { 'content-type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'buy', group: 'СР1', groupPin: mock.groupPins['СР1'], shop: 'gift', item: 101, ref: 'check-after-finale' }),
+    })).json();
+    check(buy.error === 'finished', `покупка после финала: ${JSON.stringify(buy)}`);
+    await page.click('[data-finale-clear]');
+    await answerYes(page);
+    await waitForText(page, '[data-status="finale"]', 'отменён');
+    check((await snapshotOf(mock)).finale === null, 'финал не отменён');
   });
 } finally {
   await browser.close();

@@ -2,13 +2,17 @@ import './admin.css';
 import { api, screenKey, type Snapshot } from '@/data/api';
 import { h, tabs, errorText, newVersionSlot } from './dom';
 import type { AdminCtx } from './ctx';
+import { finaleTab } from './finaleTab';
+import { grinchTab } from './grinchTab';
 import { importTab } from './importTab';
 import { createNavLock } from './navLock';
 import { normsTab } from './normsTab';
 import { paymentsTab } from './payments';
 import { pinsTab } from './pins';
+import { purchasesTab } from './purchasesTab';
 import { createResultsFlow } from './resultsFlow';
 import { resultsTab } from './resultsTab';
+import { screenTab } from './screenTab';
 import { createSession, type Session } from './session';
 import { staffTab } from './staffTab';
 import { todayLine, todayTasks } from './today';
@@ -92,6 +96,10 @@ function showWork(): void {
       { id: 'import', title: 'Импорт', render: () => importTab(ctx) },
       { id: 'staff', title: 'Сотрудники', render: () => staffTab(ctx) },
       { id: 'norms', title: 'Нормы и календарь', render: () => normsTab(ctx) },
+      { id: 'purchases', title: 'Покупки', render: () => purchasesTab(ctx) },
+      { id: 'grinch', title: 'Гринч', render: () => grinchTab(ctx) },
+      { id: 'screen', title: 'Экран', render: () => screenTab(ctx) },
+      { id: 'finale', title: 'Финал', render: () => finaleTab(ctx) },
       { id: 'pins', title: 'PIN-коды', render: () => pinsTab(ctx) },
     ]),
   );

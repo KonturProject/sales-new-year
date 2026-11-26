@@ -64,6 +64,41 @@ export function newVersionSlot(): HTMLElement {
   return slot;
 }
 
+/** Ответ раньше этого времени после показа вопроса не засчитывается: это второй щелчок двойного нажатия. */
+export const ASK_GUARD_MS = 500;
+
+/** Вопрос «Да / Отмена» без системных диалогов; Esc — «Отмена». */
+export function ask(text: string, yes = 'Да'): Promise<boolean> {
+  return new Promise((resolve) => {
+    const shownAt = performance.now();
+    const close = (answer: boolean) => {
+      dialog.close();
+      dialog.remove();
+      resolve(answer);
+    };
+    const dialog = h(
+      'dialog',
+      { class: 'ask' },
+      h('p', {}, text),
+      h(
+        'div',
+        { class: 'row' },
+        h('button', { type: 'button', 'data-ask': 'no', onclick: () => close(false) }, 'Отмена'),
+        h('button', { type: 'button', class: 'primary', 'data-ask': 'yes', onclick: () => { if (performance.now() - shownAt >= ASK_GUARD_MS) close(true); } }, yes),
+      ),
+    );
+    dialog.addEventListener('cancel', (e) => {
+      e.preventDefault();
+      close(false);
+    });
+    document.body.append(dialog);
+    dialog.showModal();
+  });
+}
+
+/** Время сервера `…T14:05:…` → `14:05`. */
+export const hhmm = (iso: string) => iso.slice(11, 16);
+
 /** `2026-11-12` → `12.11.2026`. */
 export function ruDate(iso: string): string {
   const [y, m, d] = iso.split('-');
@@ -82,6 +117,10 @@ export function errorText(e: unknown): string {
       return 'Нет связи с сервером';
     case 'bad_request':
       return 'Сервер отклонил запрос: проверьте введённые значения';
+    case 'finished':
+      return 'Финал уже проведён: лавка закрыта';
+    case 'key':
+      return 'Ключ экрана сменили: выйдите и войдите снова';
     default:
       return 'Ошибка сервера, повторите позже';
   }
