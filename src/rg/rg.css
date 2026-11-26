@@ -1,0 +1,87 @@
+:root {
+  --night: #1a1f4d;
+  --night-2: #2a2f6b;
+  --wood: #4a2c1c;
+  --wood-2: #35200f;
+  --gold: #e9c27a;
+  --cream: #fff3dc;
+  --muted: #d6c6a8;
+  --ok: #f3b64b;
+  --snow: #eef3ff;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+body {
+  font: 600 16px/1.4 'Nunito Variable', Nunito, system-ui, sans-serif; color: var(--cream);
+  background: radial-gradient(120% 70% at 50% 0%, #3b3f8f 0%, var(--night) 60%) fixed, var(--night);
+}
+#app { max-width: 960px; margin: 0 auto; padding: 12px 16px 48px; }
+h1, h2 { font-family: Marmelad, 'Nunito Variable', serif; font-weight: 400; margin: 0; }
+h1 { font-size: 26px; }
+h2 { font-size: 22px; margin-bottom: 8px; }
+h3 { font-size: 17px; margin: 10px 0 6px; }
+.muted { color: var(--muted); font-weight: 600; }
+button, select, input {
+  font: inherit; color: var(--cream); background: #ffffff14; border: 1.5px solid #ffffff3a; border-radius: 12px; padding: 10px 14px; min-height: 48px;
+}
+button { cursor: pointer; font-weight: 800; }
+button:hover:not(:disabled) { background: #ffffff24; }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: linear-gradient(#f5c451, #e09b2d); color: #3a2208; border-color: #ffe29a; }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 3px solid #ffe08a; outline-offset: 2px; }
+select option { color: #222; }
+
+.login { display: grid; gap: 14px; max-width: 360px; margin: 6vh auto 0; text-align: center; }
+.login label { display: grid; gap: 6px; text-align: left; }
+.login-tree { width: 120px; margin: 0 auto; }
+[role='alert'] { color: #ffb4a8; min-height: 1.4em; }
+
+.bar { display: flex; align-items: center; gap: 12px; padding: 6px 0 12px; }
+.bar img { width: 56px; height: 56px; object-fit: contain; }
+.bar h1 { flex: 1; }
+.status { color: #ffd59a; min-height: 1.4em; margin: 0 0 8px; }
+.update-banner { background: #f5c451; color: #3a2208; padding: 8px 12px; border-radius: 10px; }
+
+.wallet { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+.coin { display: grid; place-items: center; padding: 10px 6px; border-radius: 14px; background: linear-gradient(var(--wood), var(--wood-2)); border: 2px solid var(--gold); }
+.coin b { font-size: 30px; line-height: 1.1; color: #ffe2a0; }
+.coin.flakes b { color: #d9ecff; }
+.coin.keys b { color: #ffd0a6; }
+.coin span { font-size: 14px; color: var(--muted); }
+
+.panel { background: #10143acc; border: 1.5px solid #ffffff26; border-radius: 18px; padding: 14px; margin-bottom: 14px; }
+.pay { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pay .big { font-size: 40px; min-width: 56px; text-align: center; }
+
+.tree-pick { position: relative; width: min(100%, 420px); margin: 8px auto 12px; }
+.tree-pick img { width: 100%; display: block; }
+.slot {
+  position: absolute; width: 34px; height: 34px; min-height: 0; padding: 0; transform: translate(-50%, -50%);
+  border-radius: 50%; background: #ffffffcc; border: 3px solid #3a2208;
+}
+.slot.on { background: #f5c451; box-shadow: 0 0 0 4px #ffe29a; }
+.who { display: grid; gap: 6px; margin-bottom: 10px; }
+
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.card { display: grid; justify-items: center; gap: 4px; padding: 10px; border-radius: 14px; background: #ffffff10; border: 1.5px solid #ffffff22; text-align: center; }
+.card img { width: 72px; height: 72px; object-fit: contain; }
+.card .name { font-weight: 800; }
+.card .price { color: #ffe2a0; }
+.card button { width: 100%; }
+.card.owned { border-color: var(--gold); }
+.place { border-top: 1px solid #ffffff1c; padding-top: 4px; }
+
+.mine { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.mine li { display: flex; align-items: center; gap: 8px; }
+.mine img { width: 36px; height: 36px; object-fit: contain; }
+
+dialog.ask { border: 2px solid var(--gold); border-radius: 18px; background: var(--wood); color: var(--cream); max-width: 420px; padding: 18px; }
+dialog.ask::backdrop { background: #070a24b3; }
+dialog.ask .row { display: flex; gap: 10px; justify-content: flex-end; }
+
+@media (max-width: 480px) {
+  .cards { grid-template-columns: repeat(2, 1fr); }
+  h1 { font-size: 22px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

@@ -7,6 +7,19 @@
       "runtimeArgs": ["-m", "http.server", "5190", "--bind", "127.0.0.1", "--directory", "mockup"],
       "port": 5190,
       "url": "http://127.0.0.1:5190"
+    },
+    {
+      "name": "app",
+      "runtimeExecutable": "npm.cmd",
+      "runtimeArgs": ["run", "dev", "--", "--port", "5173", "--strictPort"],
+      "port": 5173,
+      "url": "http://127.0.0.1:5173"
+    },
+    {
+      "name": "mock",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["tools/mock-backend.mjs", "middle"],
+      "port": 8788
     }
   ]
 }
