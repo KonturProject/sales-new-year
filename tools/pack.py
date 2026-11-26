@@ -189,9 +189,18 @@ if toys:
 if decor or props:
     atlas('things', {**decor, **props}, 1536)
 
-plaza = Image.open('mockup/assets/plaza.jpg' if os.path.exists('mockup/assets/plaza.jpg') else f'{OUT}/plaza.jpg')
-if os.path.exists('work/plaza-x2.png'):
-    plaza = Image.open('work/plaza-x2.png').convert('RGB')
-plaza.convert('RGB').save(f'{OUT}/plaza.jpg', quality=90, optimize=True, progressive=True)
+# площадь: апскейл владельца (refs/plaza-upscaled.*), иначе утверждённый вариант крыш «A» (24.11–26.11); ширина 3344 —
+# столько выдерживает бюджет текстур, а наезд камеры ×2 даёт около 1,15 экранного пикселя на пиксель фона
+PLAZA_W = 3344
+found = sorted(f for f in os.listdir('refs') if f.startswith('plaza-upscaled')) if os.path.isdir('refs') else []
+src = f'refs/{found[-1]}' if found else 'refs/plaza-roofs-A.png'
+plaza = Image.open(src).convert('RGB')
+small = plaza.width < PLAZA_W
+plaza = plaza.resize((PLAZA_W, round(plaza.height * PLAZA_W / plaza.width)), Image.LANCZOS)
+if small:
+    from PIL import ImageFilter
+    plaza = plaza.filter(ImageFilter.UnsharpMask(1.6, 70, 2))
+plaza.save(f'{OUT}/plaza.jpg', quality=90, optimize=True, progressive=True)
+print(f'площадь из {src}')
 total += plaza.width * plaza.height * 4 / 1048576
 print(f'площадь {plaza.width}×{plaza.height}; текстуры всего {total:.1f} МБ (бюджет 64)')
