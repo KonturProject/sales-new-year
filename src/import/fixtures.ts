@@ -13,12 +13,12 @@ export function toXlsx(sheets: Record<string, unknown[][]>): ArrayBuffer {
   return XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
 }
 
-export const PAYMENTS_HEADER = ['Сумма заказа', '', '№ счета', 'Дата оплаты', 'Группа', 'Автор', ...Array(10).fill(''), 'Сумма'];
+export const PAYMENTS_HEADER = ['Сумма заказа', '', '№ счета', 'Дата оплаты', 'Группа', 'Автор', 'Тип головного продукта', ...Array(9).fill(''), 'Сумма'];
 
 /** Строка выгрузки оплат: 17 колонок, как в файле. */
-export const paymentLine = (invoice: unknown, date: unknown, group: unknown, author: unknown, amount: unknown): unknown[] => {
+export const paymentLine = (invoice: unknown, date: unknown, group: unknown, author: unknown, amount: unknown, product: unknown = 'Продукт'): unknown[] => {
   const r: unknown[] = Array(17).fill('');
-  r[2] = invoice; r[3] = date; r[4] = group; r[5] = author; r[16] = amount;
+  r[2] = invoice; r[3] = date; r[4] = group; r[5] = author; r[6] = product; r[16] = amount;
   return r;
 };
 

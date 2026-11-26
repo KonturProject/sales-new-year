@@ -22,23 +22,42 @@ describe('parsePaymentsGrid', () => {
     expect(Object.keys(rows[0]!).sort()).toEqual(['author', 'date', 'group', 'invoice']);
   });
 
-  test('счёт дешевле 100 ₽ отбрасывается как cheap, ровно 100 остаётся; номер строки — как в Excel', () => {
+  test('бонусный счёт Академии: продукт «Академия» и ровно 30 ₽ — academyBonus; номер строки — как в Excel', () => {
     const r = parsePaymentsGrid(grid([
-      line('A1', D1, SR5, 'Тест Один', 99.99),
-      line('A2', D1, SR5, 'Тест Один', 100),
-      line('Академия', D1, SR5, 'Тест Один', 30),
+      line('A1', D1, SR5, 'Тест Один', 30, 'Академия'),
+      line('A2', D1, SR5, 'Тест Один', 31, 'Академия'),
+      line('A3', D1, SR5, 'Тест Один', 4900, 'Академия'),
+      line('A4', D1, SR5, 'Тест Один', 30, 'Другой продукт'),
     ]));
-    expect(r.rows.map((x) => x.invoice)).toEqual(['A2']);
-    expect(r.skipped).toEqual([{ row: 4, reason: 'cheap' }, { row: 6, reason: 'cheap' }]);
+    expect(r.rows.map((x) => x.invoice)).toEqual(['A2', 'A3', 'A4']);
+    expect(r.skipped).toEqual([{ row: 4, reason: 'academyBonus' }]);
   });
 
-  test('сумма текстом принимается; не число — cheap', () => {
+  test('Академия узнаётся без учёта регистра и пробелов, сумма — числом или текстом', () => {
     const r = parsePaymentsGrid(grid([
-      line('A1', D1, SR5, 'Тест Один', '1 234,50'),
+      line('A1', D1, SR5, 'Тест Один', '30,00', '  академия '),
+      line('A2', D1, SR5, 'Тест Один', ' 30 ', 'АКАДЕМИЯ'),
+    ]));
+    expect(r.rows).toEqual([]);
+    expect(r.skipped.map((x) => x.reason)).toEqual(['academyBonus', 'academyBonus']);
+  });
+
+  test('дешёвый счёт и сумма не числом — всё равно оплата (правила 100 ₽ больше нет)', () => {
+    const r = parsePaymentsGrid(grid([
+      line('A1', D1, SR5, 'Тест Один', 5),
       line('A2', D1, SR5, 'Тест Один', 'нет'),
     ]));
-    expect(r.rows.map((x) => x.invoice)).toEqual(['A1']);
-    expect(r.skipped).toEqual([{ row: 5, reason: 'cheap' }]);
+    expect(r.rows.map((x) => x.invoice)).toEqual(['A1', 'A2']);
+    expect(r.skipped).toEqual([]);
+  });
+
+  test('в счёте позиция Академии за 30 ₽ и обычная — одна оплата, бонусная строка не считается повтором', () => {
+    const r = parsePaymentsGrid(grid([
+      line('A1', D1, SR5, 'Тест Один', 30, 'Академия'),
+      line('A1', D1, SR5, 'Тест Один', 4900, 'Другой продукт'),
+    ]));
+    expect(r.rows).toEqual([{ date: '2026-10-01', group: 'СР5', author: 'Тест Один', invoice: 'A1' }]);
+    expect(r.skipped).toEqual([{ row: 4, reason: 'academyBonus' }]);
   });
 
   test('группа вне шести отбрасывается как unknownGroup; код берётся по регулярке СРn', () => {
@@ -119,6 +138,8 @@ describe('parsePaymentsGrid', () => {
     expect(() => parsePaymentsGrid(noInvoice)).toThrow('№ счета');
     const noAuthor = [['№ счета', 'Дата оплаты', 'Группа', 'Сумма'], ['1', 2, 3, 4]];
     expect(() => parsePaymentsGrid(noAuthor)).toThrow('Автор');
+    const noProduct = [['№ счета', 'Дата оплаты', 'Группа', 'Автор', 'Сумма'], ['1', 2, 3, 4, 5]];
+    expect(() => parsePaymentsGrid(noProduct)).toThrow('Тип головного продукта');
   });
 });
 

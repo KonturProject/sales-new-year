@@ -14,11 +14,11 @@ export interface ImportedPayment {
 export interface SkippedRow {
   /** номер строки в Excel, с единицы */
   row: number;
-  reason: 'duplicate' | 'cheap' | 'unknownGroup' | 'noInvoice' | 'badDate';
+  reason: 'duplicate' | 'academyBonus' | 'unknownGroup' | 'noInvoice' | 'badDate';
 }
 
-/** Счета дешевле этой суммы (например, «Академия») оплатой не считаются. */
-const MIN_AMOUNT = 100;
+/** Бонусный счёт Академии: позиция с этим продуктом и ровно этой суммой оплатой не считается; остальные — считаются. */
+const ACADEMY = { product: 'Академия', amount: 30 } as const;
 
 const COLUMNS = {
   invoice: '№ счета',
@@ -26,11 +26,15 @@ const COLUMNS = {
   group: 'Группа',
   author: 'Автор',
   amount: 'Сумма',
+  product: 'Тип головного продукта',
 } as const;
 
 function amountOf(v: unknown): number {
   return typeof v === 'number' ? v : Number(text(v).replace(/\s/g, '').replace(',', '.'));
 }
+
+const isAcademyBonus = (product: unknown, amount: unknown): boolean =>
+  normalizeName(text(product)) === normalizeName(ACADEMY.product) && amountOf(amount) === ACADEMY.amount;
 
 /** Колонки находятся по тексту заголовка, строка заголовка — первая с «№ счета»; без неё файл не наш. */
 function locateColumns(grid: unknown[][]): { header: number; col: Record<keyof typeof COLUMNS, number> } {
@@ -46,8 +50,9 @@ function locateColumns(grid: unknown[][]): { header: number; col: Record<keyof t
 }
 
 /**
- * Разбор выгрузки оплат. Оплата = уникальный «№ счета»; строки дешевле 100 ₽, вне шести групп, без номера
- * счёта (итоговая строка) или с непонятной датой отбрасываются и перечисляются в `skipped`. При повторе счёта
+ * Разбор выгрузки оплат. Оплата = уникальный «№ счета»; бонусные позиции Академии (продукт «Академия», ровно 30 ₽),
+ * строки вне шести групп, без номера счёта (итоговая строка) или с непонятной датой отбрасываются и перечисляются
+ * в `skipped`. При повторе счёта
  * остаётся строка с самой ранней датой, при равной — с меньшим нормализованным ФИО, поэтому порядок строк
  * в файле не влияет на результат.
  */
@@ -66,7 +71,7 @@ export function parsePaymentsGrid(grid: unknown[][]): { rows: ImportedPayment[];
     if (invoice === '') skipped.push({ row, reason: 'noInvoice' });
     else if (date === null) skipped.push({ row, reason: 'badDate' });
     else if (group === null) skipped.push({ row, reason: 'unknownGroup' });
-    else if (!(amountOf(r[col.amount]) >= MIN_AMOUNT)) skipped.push({ row, reason: 'cheap' });
+    else if (isAcademyBonus(r[col.product], r[col.amount])) skipped.push({ row, reason: 'academyBonus' });
     else kept.push({ date, group, author: text(r[col.author]), invoice, row });
   }
   const winners = new Set(uniqueInvoices(kept, (p) => normalizeName(p.author)));

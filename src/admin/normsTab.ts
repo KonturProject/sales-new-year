@@ -1,0 +1,211 @@
+import type { ConfigChange, Snapshot, SnapshotConfig } from '@/data/api';
+import { configOf, timelineOf } from '@/data/config';
+import type { Config } from '@/engine/config';
+import type { DateStr } from '@/engine/types';
+import { configFormOf, configPatch, LEVELS, LEVEL_TITLE, NORM_FIELD_TITLE, NORM_FIELDS } from './configForm';
+import { configPreview, describeChange, describeEntry, removalPreview, type ConfigPreview } from './configPreview';
+import type { AdminCtx } from './ctx';
+import { errorText, h, ruDate } from './dom';
+import { holidaysBlock } from './holidaysBlock';
+
+/** Что действует на дату `from` (без даты — «вся игра», то есть база): с этих значений начинается форма. */
+function currentAt(s: Snapshot, from: DateStr | undefined): Config {
+  return from === undefined ? configOf(s.config) : timelineOf(s).at(from);
+}
+
+/** Правка трогает только нормы оплат: оценки дней (воронку) она не пересчитывает. */
+const paymentsOnly = (patch: SnapshotConfig): boolean =>
+  Object.keys(patch).every((k) => k === 'norms') &&
+  LEVELS.every((l) => Object.keys(patch.norms?.[l] ?? {}).every((f) => f === 'payments'));
+
+const changesOf = (s: Snapshot): ConfigChange[] => s.configChanges ?? [];
+
+/**
+ * Вкладка «Нормы и пороги»: поля предзаполнены тем, что реально действует (на выбранную дату или на всю игру), на сервер
+ * уходит только изменённое. Диапазоны проверяет сервер: его отказ показывается как есть. Без даты правка действует на
+ * всю историю, с датой — только с неё; в обоих случаях «Сохранить» сначала показывает, что изменится у групп сегодня,
+ * и пишет на сервер только после «Применить». Ниже список правок по датам с кнопкой «Убрать», а под ним блок «Выходные
+ * дни». Выходные меняют оценку дней, поэтому пишутся через общий поток записи страницы (`ctx.resultsFlow`), и вкладка при
+ * открытии, как «Итоги» и «Импорт», сначала просит у потока проверить потерянную запись, а потом читает первый снимок.
+ */
+export async function normsTab(ctx: AdminCtx): Promise<HTMLElement> {
+  const opening = ctx.resultsFlow.begin();
+  const checked = await opening.open();
+  let snap = await ctx.snapshot();
+  const alert = h('p', { role: 'alert', 'data-alert': 'config' });
+  const status = h('p', { role: 'status', 'data-status': 'config' });
+  const box = h('div', {});
+  const previewBox = h('div', {});
+  const listBox = h('div', {});
+  const { startDate, endDate } = configOf(snap.config);
+
+  // вне перерисовываемой формы: выбранная дата переживает перерисовку, а смена даты перестраивает форму
+  const fromInput = h('input', {
+    type: 'date', 'data-field': 'from', min: startDate, max: endDate,
+    onchange: () => {
+      alert.textContent = '';
+      status.textContent = '';
+      previewBox.replaceChildren();
+      paint();
+    },
+  });
+  const chosen = (): DateStr | undefined => fromInput.value || undefined;
+
+  const afterWrite = async (): Promise<void> => {
+    snap = await ctx.snapshot();
+    previewBox.replaceChildren();
+    paint();
+    paintList();
+    status.textContent = 'Сохранено';
+  };
+
+  /** Окно «что изменится»: текст-пояснение, последствия для групп сегодня и «Применить» / «Отмена». */
+  function showPreview(p: ConfigPreview, intro: string[], run: () => Promise<unknown>): void {
+    const apply = h('button', { type: 'button', 'data-confirm': 'config' }, 'Применить');
+    apply.addEventListener('click', () => {
+      apply.disabled = true;
+      run().then(afterWrite, (e) => {
+        apply.disabled = false;
+        alert.textContent = errorText(e);
+      });
+    });
+    previewBox.replaceChildren(h(
+      'div',
+      { 'data-preview': 'config', role: 'group', 'aria-label': 'Что изменится' },
+      ...intro.map((t) => h('p', {}, t)),
+      h('p', {}, `У групп сегодня (${p.asOf}) изменится:`),
+      p.changes.length
+        ? h('ul', {}, ...p.changes.map((c) => h('li', {}, describeChange(c))))
+        : h('p', {}, 'ничего: план, монеты, снежинки и ключики те же.'),
+      apply,
+      h('button', { type: 'button', 'data-cancel': 'config', onclick: () => previewBox.replaceChildren() }, 'Отмена'),
+    ));
+  }
+
+  const evaluatedLine = (p: ConfigPreview, from: DateStr): string => (p.evaluatedDays
+    ? `Пересчитаются оценки рабочих дней: ${p.evaluatedDays} (с ${ruDate(from)} по ${ruDate(p.evaluatedThrough!)}).`
+    : 'Оценок рабочих дней, которые пересчитаются, нет: воронка за эти дни ещё не загружена.');
+
+  function paint(): void {
+    const from = chosen();
+    const current = currentAt(snap, from);
+    const start = configFormOf(current);
+    const inputs = new Map<string, HTMLInputElement>();
+    const input = (key: string, value: string, disabled = false) => {
+      const el = h('input', { type: 'text', inputmode: key.startsWith('norm-') ? 'decimal' : 'numeric', autocomplete: 'off', 'data-field': key, value, disabled });
+      inputs.set(key, el);
+      return el;
+    };
+    const val = (key: string) => inputs.get(key)!.value;
+
+    const norms = LEVELS.map((level) => h(
+      'fieldset',
+      {},
+      h('legend', {}, LEVEL_TITLE[level]),
+      ...NORM_FIELDS.map((f) => h('label', {}, `${NORM_FIELD_TITLE[f]} `, input(`norm-${level}-${f}`, start.norms[level][f]))),
+    ));
+
+    const save = (ev: Event) => {
+      ev.preventDefault();
+      alert.textContent = '';
+      status.textContent = '';
+      // у недописанной даты value пуст: без этой проверки правка ушла бы «на всю игру»
+      if (fromInput.validity.badInput) {
+        alert.textContent = 'Дата введена не полностью: выберите день или очистите поле';
+        return;
+      }
+      const form = structuredClone(start);
+      for (const level of LEVELS) for (const f of NORM_FIELDS) form.norms[level][f] = val(`norm-${level}-${f}`);
+      const patch = configPatch(form, current, from);
+      if ('error' in patch) {
+        alert.textContent = patch.error;
+        return;
+      }
+      previewBox.replaceChildren();
+      ctx.snapshot().then(
+        (snapshot) => {
+          snap = snapshot;
+          previewFor(patch, from);
+        },
+        (e) => { alert.textContent = errorText(e); },
+      );
+    };
+
+    box.replaceChildren(h(
+      'form',
+      { 'data-form': 'config', onsubmit: save, oninput: () => previewBox.replaceChildren() },
+      h('p', { 'data-warning': 'config' }, from === undefined
+        ? 'Правка действует на всю историю игры: пересчитаются все прошлые дни. Перед записью покажем, что изменится у групп.'
+        : `Правка действует с ${ruDate(from)}: дни до неё остаются как были. Перед записью покажем, что изменится у групп.`),
+      h('h2', {}, 'Личные нормы по уровням'),
+      h('p', { class: 'muted' }, 'Счета 6+ («качественные») и 20+ («длинные») — за день, снежинки и ключики считаются от их суммы за месяц. «Оплат в день» — для тех, у кого нет личного плана; можно дробно (0,27).'),
+      ...norms,
+      h('button', { type: 'submit', 'data-save': 'config' }, 'Сохранить'),
+    ));
+  }
+
+  function previewFor(patch: SnapshotConfig, from: DateStr | undefined): void {
+    const p = configPreview(snap, patch, from);
+    const intro = from === undefined
+      ? [
+        'Правка пересчитает всю историю игры, а не только дни после неё.',
+        ...(p.erased.length ? [`Записи по датам, в которых те же поля: ${p.erased.map(ruDate).join(', ')} — эти поля из них уберутся, иначе правка на всю игру не действовала бы после них.`] : []),
+      ]
+      : paymentsOnly(patch)
+        ? [`Норма оплат с ${ruDate(from)}: пересчитается план группы на игру, а от него «% плана» и монеты.`]
+        : p.future
+          ? [`Вступит в силу с ${ruDate(from)}: оценки дней сегодня не меняются.`]
+          : [evaluatedLine(p, from)];
+    showPreview(p, intro, () => ctx.session.call('setConfig', from === undefined ? { config: patch } : { config: patch, from }));
+  }
+
+  function removeFor(from: DateStr): void {
+    alert.textContent = '';
+    status.textContent = '';
+    previewBox.replaceChildren();
+    ctx.snapshot().then(
+      (snapshot) => {
+        snap = snapshot;
+        const p = removalPreview(snap, from);
+        const entry = changesOf(snap).find((e) => e.from === from);
+        const detail = entry && paymentsOnly(entry.config)
+          ? 'Запись меняет только норму оплат: пересчитается план группы на игру, оценки дней не меняются.'
+          : p.future ? 'Дата ещё не наступила: оценки дней сегодня не меняются.' : evaluatedLine(p, from);
+        const intro = [`Запись с ${ruDate(from)} будет убрана: с этой даты вернётся то, что действует до неё.`, detail];
+        showPreview(p, intro, () => ctx.session.call('removeConfigChange', { from }));
+      },
+      (e) => { alert.textContent = errorText(e); },
+    );
+  }
+
+  function paintList(): void {
+    const changes = changesOf(snap);
+    listBox.replaceChildren(
+      h('h2', {}, 'Правки по датам'),
+      changes.length
+        ? h('ul', { 'data-list': 'config-changes' }, ...changes.map((c) => h(
+          'li',
+          { 'data-change': c.from },
+          `${describeEntry(c)} `,
+          h('button', { type: 'button', 'data-remove-change': c.from, onclick: () => removeFor(c.from) }, 'Убрать'),
+        )))
+        : h('p', {}, 'Правок по датам нет.'),
+    );
+  }
+
+  const holidays = holidaysBlock(ctx, snap, checked);
+  paint();
+  paintList();
+  if (!opening.attach(holidays.view)) return h('div'); // открытие успели сменить более новым: этот экземпляр на экран не попадёт
+  return h(
+    'div',
+    {},
+    h('label', {}, 'Действует с даты (пусто — на всю игру) ', fromInput),
+    box,
+    previewBox,
+    alert,
+    status,
+    listBox,
+    holidays.node,
+  );
+}

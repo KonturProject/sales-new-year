@@ -1,0 +1,305 @@
+import { serverToday } from '@/data/api';
+import { groupOn, normalizeName, type Absence, type Employee } from '@/engine/staff';
+import { GROUPS, type DateStr, type Level } from '@/engine/types';
+import type { AdminCtx } from './ctx';
+import { errorText, h, ruDate } from './dom';
+import { fileBlock } from './importTab';
+import { absenceCalls, buildAbsence, buildStaffPatch, bulkStaffPatches, filterStaff, formOf, parseStaffJson, planText, readPlan, splitStaffJson, type BulkEdit, type StaffCurrent } from './staffForm';
+
+const LEVEL_TITLE: Record<Level, string> = { experienced: 'Опытный', rookie1: 'Новичок 1', rookie2: 'Новичок 2' };
+const KIND_TITLE: Record<Absence['kind'], string> = { vacation: 'Отпуск', sick: 'Больничный', other: 'Другое' };
+
+interface Data {
+  today: DateStr;
+  staff: Employee[];
+  absences: Absence[];
+  reasons: Record<string, string>;
+}
+
+const field = (label: string, control: HTMLElement) => h('label', {}, `${label} `, control);
+/** Поле личного плана: текст, чтобы принять и запятую (6,5); проверка — `readPlan` в `staffForm`. */
+const planInput = (value: string, attrs: Record<string, string>) => h('input', { type: 'text', inputmode: 'decimal', size: 5, value, ...attrs });
+const option = (value: string, title: string, selected = false) => h('option', { value, selected }, title);
+/**
+ * Вкладка «Сотрудники»: поиск и карточка (приём, увольнение, перевод, уровень, исключение из рейтинга), отсутствия,
+ * таблица уровней и дат приёма всего штата и загрузка списка из JSON. После каждой записи снимок и причины читаются заново и вкладка перерисовывается:
+ * у админки нет опроса, `store` ей не нужен.
+ */
+export async function staffTab(ctx: AdminCtx): Promise<HTMLElement> {
+  const load = async (): Promise<Data> => {
+    const [snapshot, priv] = await Promise.all([
+      ctx.snapshot(),
+      ctx.session.call<{ hiddenReasons: Record<string, string> }>('getPrivate'),
+    ]);
+    return { today: serverToday(snapshot), staff: snapshot.staff, absences: snapshot.absences, reasons: priv.hiddenReasons };
+  };
+  let data = await load();
+  let query = '';
+  let selectedId: string | null = null;
+
+  const alert = h('p', { role: 'alert', 'data-alert': 'staff-form' });
+  const status = h('p', { role: 'status', 'data-status': 'staff-form' });
+  const count = h('p', { 'data-staff-count': true });
+  const list = h('ul', { 'data-staff-list': true });
+  const card = h('section', { 'data-staff-card': true });
+
+  const write = async (action: string, body: Record<string, unknown>): Promise<boolean> => {
+    alert.textContent = '';
+    status.textContent = '';
+    try {
+      await ctx.session.call(action, body);
+      data = await load();
+      paint();
+      paintBulk();
+      status.textContent = 'Сохранено';
+      return true;
+    } catch (e) {
+      alert.textContent = errorText(e);
+      return false;
+    }
+  };
+
+  function paintList(): void {
+    const found = filterStaff(data.staff, query);
+    count.textContent = `Найдено: ${found.length} из ${data.staff.length}`;
+    list.replaceChildren(...found.map((e) => h(
+      'li',
+      {},
+      h('button', {
+        type: 'button',
+        'data-employee': e.id,
+        'aria-pressed': e.id === selectedId,
+        onclick: () => {
+          selectedId = e.id;
+          alert.textContent = '';
+          status.textContent = '';
+          paint();
+        },
+      }, `${e.name} — ${groupOn(e, data.today)}`),
+    )));
+  }
+
+  function paintCard(): void {
+    const e = data.staff.find((x) => x.id === selectedId);
+    if (!e) return card.replaceChildren(h('p', {}, 'Выберите сотрудника из списка'));
+    const current: StaffCurrent = { ...e, hiddenReason: data.reasons[e.id] ?? '' };
+    const start = formOf(current);
+
+    const hire = h('input', { type: 'date', 'data-field': 'hireDate', value: start.hireDate });
+    const fire = h('input', { type: 'date', 'data-field': 'fireDate', value: start.fireDate });
+    const level = h('select', { 'data-field': 'baseLevel' }, ...(Object.keys(LEVEL_TITLE) as Level[]).map((l) => option(l, LEVEL_TITLE[l], l === start.baseLevel)));
+    const plan = planInput(start.paymentPlan, { 'data-field': 'paymentPlan' });
+    const hidden = h('input', { type: 'checkbox', 'data-field': 'hiddenFromRating', checked: start.hiddenFromRating });
+    const reason = h('input', { type: 'text', 'data-field': 'hiddenReason', maxlength: 200, value: start.hiddenReason });
+    const transferDate = h('input', { type: 'date', 'data-field': 'transferDate' });
+    const transferGroup = h('select', { 'data-field': 'transferGroup' }, option('', '—'), ...GROUPS.map((g) => option(g, g)));
+
+    const save = (ev: Event) => {
+      ev.preventDefault();
+      const patch = buildStaffPatch(current, {
+        hireDate: hire.value,
+        fireDate: fire.value,
+        baseLevel: level.value as Level,
+        hiddenFromRating: hidden.checked,
+        hiddenReason: reason.value,
+        transferDate: transferDate.value,
+        transferGroup: transferGroup.value as '' | (typeof GROUPS)[number],
+        paymentPlan: plan.value,
+      });
+      if ('error' in patch) {
+        status.textContent = '';
+        alert.textContent = patch.error;
+        return;
+      }
+      void write('setStaff', { staff: [patch] });
+    };
+
+    const kind = h('select', { 'data-field': 'absenceKind' }, ...(Object.keys(KIND_TITLE) as Absence['kind'][]).map((k) => option(k, KIND_TITLE[k])));
+    const from = h('input', { type: 'date', 'data-field': 'absenceFrom' });
+    const to = h('input', { type: 'date', 'data-field': 'absenceTo' });
+    const addAbsence = (ev: Event) => {
+      ev.preventDefault();
+      const built = buildAbsence({ kind: kind.value, from: from.value, to: to.value });
+      if ('error' in built) {
+        status.textContent = '';
+        alert.textContent = built.error;
+        return;
+      }
+      void write('setAbsence', { employeeId: e.id, ...built });
+    };
+
+    const mine = data.absences.filter((a) => a.employeeId === e.id);
+    card.replaceChildren(
+      h('h2', {}, e.name),
+      h('p', {}, `Сейчас в группе ${groupOn(e, data.today)}`),
+      h(
+        'form',
+        { 'data-form': 'staff', onsubmit: save },
+        field('Принят', hire),
+        field('Уволен', fire),
+        field('Уровень', level),
+        field('План оплат на месяц (из служебки; пусто — по норме уровня)', plan),
+        h('label', {}, hidden, ' Исключить из рейтинга'),
+        field('Причина (видна только админу)', reason),
+        h('p', {}, e.transfers.length
+          ? `Переводы: ${e.transfers.map((t) => `с ${ruDate(t.date)} — ${t.group}`).join('; ')}`
+          : 'Переводов не было'),
+        field('Перевод с даты', transferDate),
+        field('в группу', transferGroup),
+        h('button', { type: 'submit', 'data-save': 'staff' }, 'Сохранить'),
+      ),
+      h('h3', {}, 'Отсутствия'),
+      h('ul', { 'data-absences': true }, ...mine.map((a) => h(
+        'li',
+        {},
+        `${KIND_TITLE[a.kind]}: ${ruDate(a.from)} — ${a.to ? ruDate(a.to) : 'без даты окончания'} `,
+        h('button', { type: 'button', 'data-remove': a.from, onclick: () => void write('removeAbsence', { employeeId: e.id, from: a.from }) }, 'Снять'),
+      ))),
+      h(
+        'form',
+        { 'data-form': 'absence', onsubmit: addAbsence },
+        field('Тип', kind),
+        field('С', from),
+        field('По (можно пусто)', to),
+        h('button', { type: 'submit', 'data-add': 'absence' }, 'Добавить'),
+      ),
+    );
+  }
+
+  function paint(): void {
+    paintList();
+    paintCard();
+  }
+
+  const search = h('input', {
+    type: 'search',
+    'data-staff-search': true,
+    'aria-label': 'Поиск сотрудника',
+    oninput: () => {
+      query = search.value;
+      paintList();
+    },
+  });
+
+  const json = fileBlock('staff', 'Загрузить список из JSON', '.json,application/json', async (buf, show) => {
+    const items = parseStaffJson(new TextDecoder().decode(buf));
+    if ('error' in items) return show([items.error]);
+    const known = new Set(data.staff.map((e) => normalizeName(e.name)));
+    const added = items.filter((i) => !known.has(normalizeName(i.name))).length;
+    const { staff, absences } = splitStaffJson(items);
+    show([`Записей: ${items.length}; новых: ${added}; обновится: ${items.length - added}; отсутствий: ${absences.length}`], {
+      label: 'Загрузить',
+      run: async () => {
+        const done = await ctx.session.call<{ added: number; updated: number }>('setStaff', { staff });
+        data = await load();
+        // отсутствия — после штата: id новых сотрудников появляются только в свежем снимке
+        const calls = absenceCalls(absences, data.staff);
+        for (const c of calls) await ctx.session.call('setAbsence', c);
+        if (calls.length) data = await load();
+        paint();
+        paintBulk();
+        return [`Добавлено: ${done.added}; обновлено: ${done.updated}; отсутствий записано: ${calls.length}.`];
+      },
+    });
+  });
+
+  // таблица уровней и дат приёма: правки копятся в полях и уходят одной кнопкой; перерисовка — только после записи
+  const bulkBody = h('tbody', {});
+  const bulkSave = h('button', { type: 'button', 'data-bulk-save': true, onclick: () => void saveBulk() }, 'Сохранить изменения');
+  const bulkAlert = h('p', { role: 'alert', 'data-alert': 'bulk' });
+  const bulkStatus = h('p', { role: 'status', 'data-status': 'bulk' });
+  const bulkHint = h('p', { class: 'muted', 'data-bulk-hint': true });
+  // фильтр только прячет строки: правки в скрытых строках не теряются и уходят той же кнопкой
+  const bulkFilter = h('select', { 'data-bulk-filter': true, 'aria-label': 'Группа', onchange: () => filterBulk() },
+    option('', 'Все группы'), ...GROUPS.map((g) => option(g, g)));
+  let bulkFields = new Map<string, { level: HTMLSelectElement; hire: HTMLInputElement; plan: HTMLInputElement; row: HTMLElement; group: string }>();
+  const bulkEdits = (): Record<string, BulkEdit> =>
+    Object.fromEntries([...bulkFields].map(([id, f]) => [id, { baseLevel: f.level.value as Level, hireDate: f.hire.value, paymentPlan: f.plan.value }]));
+  const countBulk = () => {
+    const byId = new Map(data.staff.map((e) => [e.id, e]));
+    let undated = 0;
+    for (const [id, f] of bulkFields) {
+      const e = byId.get(id);
+      f.row.classList.toggle('changed', !!e && (f.level.value !== e.baseLevel || f.hire.value !== (e.hireDate ?? '') || f.hire.validity.badInput || readPlan(f.plan.value) !== (e.paymentPlan ?? null)));
+      if (f.level.value !== 'experienced' && !f.hire.value) undated++;
+    }
+    bulkHint.textContent = undated ? `Новички без даты приёма: ${undated} — без даты уровень не меняется сам: «Новичок 1» останется им до конца игры, а не перейдёт во второй уровень и в опытные.` : '';
+    const result = bulkStaffPatches(data.staff, bulkEdits());
+    bulkSave.textContent = 'error' in result ? 'Сохранить изменения' : `Сохранить изменения (${result.patches.length})`;
+  };
+  const filterBulk = () => {
+    for (const f of bulkFields.values()) f.row.hidden = bulkFilter.value !== '' && f.group !== bulkFilter.value;
+  };
+
+  function paintBulk(): void {
+    bulkFields = new Map();
+    bulkBody.replaceChildren(...data.staff.map((e, i) => {
+      const level = h('select', { 'data-bulk-level': e.id, 'aria-label': `Уровень, строка ${i + 1}`, onchange: countBulk },
+        ...(Object.keys(LEVEL_TITLE) as Level[]).map((l) => option(l, LEVEL_TITLE[l], l === e.baseLevel)));
+      const hire = h('input', { type: 'date', 'data-bulk-hire': e.id, value: e.hireDate ?? '', 'aria-label': `Дата приёма, строка ${i + 1}`, oninput: countBulk });
+      const plan = planInput(planText(e.paymentPlan), { 'data-bulk-plan': e.id, 'aria-label': `План оплат на месяц, строка ${i + 1}` });
+      plan.addEventListener('input', countBulk);
+      const group = groupOn(e, data.today);
+      const row = h('tr', { 'data-bulk-row': e.id }, h('td', {}, String(i + 1)), h('td', {}, e.name), h('td', {}, group), h('td', {}, level), h('td', {}, hire), h('td', {}, plan));
+      bulkFields.set(e.id, { level, hire, plan, row, group });
+      return row;
+    }));
+    countBulk();
+    filterBulk();
+  }
+
+  async function saveBulk(): Promise<void> {
+    bulkAlert.textContent = '';
+    bulkStatus.textContent = '';
+    // у недописанной даты value пуст: без проверки ушло бы «даты приёма нет». Таблица — не форма, браузер её не держит
+    const half = [...bulkFields.values()].findIndex((f) => f.hire.validity.badInput); // порядок строк = порядок data.staff
+    if (half >= 0) {
+      bulkAlert.textContent = `Строка ${half + 1}: дата приёма введена не полностью — выберите день или очистите поле`;
+      return;
+    }
+    const result = bulkStaffPatches(data.staff, bulkEdits());
+    if ('error' in result) {
+      bulkAlert.textContent = result.error;
+      return;
+    }
+    if (!result.patches.length) {
+      bulkStatus.textContent = 'Изменений нет';
+      return;
+    }
+    bulkSave.disabled = true;
+    try {
+      await ctx.session.call('setStaff', { staff: result.patches });
+      data = await load();
+      paint();
+      paintBulk();
+      bulkStatus.textContent = `Сохранено строк: ${result.patches.length}`;
+    } catch (e) {
+      bulkAlert.textContent = errorText(e);
+    } finally {
+      bulkSave.disabled = false;
+    }
+  }
+
+  const bulk = h(
+    'section',
+    { 'data-bulk': true },
+    h('h2', {}, 'Уровни, даты приёма и план'),
+    h('p', {}, 'Новичкам — уровень и дату приёма: от неё «Новичок 1» — первые две недели, «Новичок 2» — третья и четвёртая, дальше опытный. План — оплат на месяц из служебки (пусто — по норме уровня). Изменённые строки подсвечены, сохраняются одной кнопкой.'),
+    h('div', { class: 'toolbar' }, h('label', {}, 'Показать ', bulkFilter), bulkHint),
+    h('div', { class: 'table-wrap' }, h('table', { class: 'bulk' }, h('thead', {}, h('tr', {}, ...['№', 'Сотрудник', 'Группа', 'Уровень', 'Принят', 'План/мес'].map((t) => h('th', {}, t)))), bulkBody)),
+    bulkSave,
+    bulkAlert,
+    bulkStatus,
+  );
+
+  paint();
+  paintBulk();
+  const pick = h(
+    'section',
+    {},
+    h('h2', {}, 'Карточка сотрудника'),
+    h('p', { class: 'muted' }, 'Увольнение, перевод в другую группу, исключение из рейтинга, отпуска и больничные.'),
+    h('div', { class: 'staff-pick' }, h('div', {}, field('Поиск', search), count, list), h('div', {}, card, alert, status)),
+  );
+  return h('div', {}, bulk, pick, json);
+}

@@ -1,0 +1,162 @@
+import { serverToday, type ConfigChange, type Snapshot, type SnapshotConfig } from '@/data/api';
+import { configOf } from '@/data/config';
+import { buildFacts } from '@/data/facts';
+import { workingDaysBetween } from '@/engine/calendar';
+import { ruNum } from '@/engine/format';
+import { GROUPS, type DateStr, type GroupCode } from '@/engine/types';
+import { LEVELS, LEVEL_TITLE, NORM_FIELD_TITLE, NORM_FIELDS } from './configForm';
+import { ruDate } from './dom';
+
+/** То, что группа видит в игре: процент плана, монеты, снежинки, ключики (балансы, как на странице РГ). */
+export interface GroupLineNow { percent: number; coins: number; flakes: number; keys: number }
+export interface GroupChange { group: GroupCode; before: GroupLineNow; after: GroupLineNow }
+
+const lineOf = (f: ReturnType<typeof buildFacts>, g: GroupCode): GroupLineNow => ({
+  percent: Math.floor(f.groups[g].wallet.percent),
+  coins: Math.max(0, f.groups[g].balance.coins),
+  flakes: Math.max(0, f.groups[g].balance.flakes),
+  keys: Math.max(0, f.groups[g].balance.keys),
+});
+
+/** Так же, как `setConfig` на сервере: нормы сливаются по уровню и полю. */
+export function mergeConfig(raw: SnapshotConfig, patch: SnapshotConfig): SnapshotConfig {
+  const out: SnapshotConfig = { ...raw, ...patch };
+  if (patch.norms) {
+    const norms: NonNullable<SnapshotConfig['norms']> = { ...raw.norms };
+    for (const level of LEVELS) if (patch.norms[level]) norms[level] = { ...norms[level], ...patch.norms[level] };
+    out.norms = norms;
+  }
+  return out;
+}
+
+/** То, что хранит сервер: настройки на всю игру и правки «с даты». */
+export interface ConfigState { config: SnapshotConfig; configChanges: ConfigChange[] }
+
+const stateOf = (s: Pick<Snapshot, 'config' | 'configChanges'>): ConfigState => ({
+  config: s.config,
+  configChanges: Array.isArray(s.configChanges) ? s.configChanges : [],
+});
+
+const byFrom = (a: ConfigChange, b: ConfigChange) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0);
+
+/** Вычёркивает из записей поля патча (нормы — по уровню и полю); опустевшие записи удаляются, исходные не меняются. */
+function stripFields(changes: ConfigChange[], patch: SnapshotConfig): ConfigChange[] {
+  return changes
+    .map((e) => {
+      const config = structuredClone(e.config);
+      if (patch.norms && config.norms) {
+        for (const level of LEVELS) {
+          const fields = patch.norms[level];
+          const norm = config.norms[level];
+          if (!fields || !norm) continue;
+          for (const f of NORM_FIELDS) if (f in fields) delete norm[f];
+          if (!Object.keys(norm).length) delete config.norms[level];
+        }
+        if (!Object.keys(config.norms).length) delete config.norms;
+      }
+      return { from: e.from, config };
+    })
+    .filter((e) => Object.keys(e.config).length > 0);
+}
+
+/**
+ * Зеркало записи `setConfig` на сервере (apps-script/Code.gs): без даты правка идёт в настройки на всю игру и вычёркивает
+ * те же поля из записей по датам; с датой — в запись этой даты (повтор сливается). Совпадение с сервером проверяет
+ * apps-script/test/config-parity.test.mjs.
+ */
+export function applyPatch(state: ConfigState, patch: SnapshotConfig, from?: DateStr): ConfigState {
+  if (from === undefined) {
+    return { config: mergeConfig(state.config, patch), configChanges: stripFields(state.configChanges, patch) };
+  }
+  const existing = state.configChanges.find((e) => e.from === from);
+  const entry: ConfigChange = { from, config: mergeConfig(existing?.config ?? {}, patch) };
+  return { config: state.config, configChanges: [...state.configChanges.filter((e) => e.from !== from), entry].sort(byFrom) };
+}
+
+/** Зеркало `removeConfigChange`. */
+export function removeChange(state: ConfigState, from: DateStr): ConfigState {
+  return { config: state.config, configChanges: state.configChanges.filter((e) => e.from !== from) };
+}
+
+export interface ConfigPreview {
+  /** «сегодня» по серверу (R23) */
+  asOf: DateStr;
+  /** правка с даты, которая ещё не наступила: оценки дней сегодня не меняются, но норма оплат меняет план на игру */
+  future: boolean;
+  /** рабочие дни от даты правки (без даты — с начала игры) до последнего дня с загруженной воронкой: у них пересчитывается оценка */
+  evaluatedDays: number;
+  evaluatedThrough: DateStr | null;
+  changes: GroupChange[];
+  /** даты записей, которые правка на всю игру урезает или убирает */
+  erased: DateStr[];
+}
+
+function evaluated(s: Snapshot, from: DateStr, asOf: DateStr): { days: number; through: DateStr | null } {
+  const end = s.funnelThrough === null ? null : s.funnelThrough < asOf ? s.funnelThrough : asOf;
+  if (end === null || end < from) return { days: 0, through: null };
+  const days = workingDaysBetween(from, end, configOf(s.config));
+  return { days: days.length, through: days[days.length - 1] ?? null };
+}
+
+/** Группы на `asOf` в двух снимках; только те, у которых изменилось видимое (процент плана, монеты, снежинки, ключики). */
+export function walletChanges(before: Snapshot, after: Snapshot, asOf: DateStr): GroupChange[] {
+  const was = buildFacts(before, asOf);
+  const now = buildFacts(after, asOf);
+  const changes: GroupChange[] = [];
+  for (const group of GROUPS) {
+    const change = { group, before: lineOf(was, group), after: lineOf(now, group) };
+    if (differences(change).length) changes.push(change);
+  }
+  return changes;
+}
+
+function compare(s: Snapshot, next: ConfigState, from: DateStr | undefined, erased: DateStr[]): ConfigPreview {
+  const asOf = serverToday(s);
+  const future = from !== undefined && from > asOf;
+  const { days, through } = evaluated(s, from ?? configOf(s.config).startDate, asOf);
+  // и для будущей даты: норма оплат с неё меняет план группы на всю игру, а значит монеты уже сегодня
+  const changes = walletChanges(s, { ...s, config: next.config, configChanges: next.configChanges }, asOf);
+  return { asOf, future, evaluatedDays: days, evaluatedThrough: through, changes, erased };
+}
+
+/**
+ * Что станет с группами сегодня (по серверу, R23), если применить правку к нормам. Без даты правка действует
+ * на всю историю, с датой — только с неё. В списке только группы, у которых что-то заметно изменилось.
+ */
+export function configPreview(s: Snapshot, patch: SnapshotConfig, from?: DateStr): ConfigPreview {
+  const state = stateOf(s);
+  const next = applyPatch(state, patch, from);
+  const erased = from !== undefined ? [] : state.configChanges
+    .filter((e) => JSON.stringify(next.configChanges.find((n) => n.from === e.from)?.config) !== JSON.stringify(e.config))
+    .map((e) => e.from);
+  return compare(s, next, from, erased);
+}
+
+/** То же для удаления записи «с даты». */
+export function removalPreview(s: Snapshot, from: DateStr): ConfigPreview {
+  return compare(s, removeChange(stateOf(s), from), from, []);
+}
+
+const PARTS = [['coins', 'монеты'], ['flakes', 'снежинки'], ['keys', 'ключики']] as const;
+
+function differences({ before, after }: GroupChange): string[] {
+  const parts: string[] = [];
+  if (before.percent !== after.percent) parts.push(`план ${before.percent} % → ${after.percent} %`);
+  for (const [key, title] of PARTS) if (before[key] !== after[key]) parts.push(`${title} ${before[key]} → ${after[key]}`);
+  return parts;
+}
+
+/** «СР1: план 40 % → 44 %; монеты 12 → 16» — только то, что изменилось. */
+export const describeChange = (c: GroupChange): string => `${c.group}: ${differences(c).join('; ')}`;
+
+/** «с 10.12.2026: Опытный — качественные 2» — что задаёт запись. */
+export function describeEntry({ from, config }: ConfigChange): string {
+  const parts: string[] = [];
+  for (const level of LEVELS) {
+    const norm = config.norms?.[level];
+    if (!norm) continue;
+    const fields = NORM_FIELDS.filter((f) => norm[f] !== undefined).map((f) => `${NORM_FIELD_TITLE[f]} ${ruNum(norm[f]!)}`);
+    if (fields.length) parts.push(`${LEVEL_TITLE[level]} — ${fields.join(', ')}`);
+  }
+  return `с ${ruDate(from)}: ${parts.join('; ')}`;
+}

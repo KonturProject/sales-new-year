@@ -1,0 +1,259 @@
+import { parseDate } from '@/engine/calendar';
+import { normalizeName, type Absence, type Employee } from '@/engine/staff';
+import { GROUPS, type DateStr, type GroupCode, type Level } from '@/engine/types';
+
+const LEVELS: Level[] = ['experienced', 'rookie1', 'rookie2'];
+const KINDS: Absence['kind'][] = ['vacation', 'sick', 'other'];
+/** Как `HIDDEN_REASON_MAX` в `Code.gs`: длиннее сервер отклонит. */
+const HIDDEN_REASON_MAX = 200;
+const JSON_KEYS = new Set(['name', 'group', 'hireDate', 'fireDate', 'baseLevel', 'hiddenFromRating', 'hiddenReason', 'paymentPlan', 'absences']);
+const ABSENCE_KEYS = new Set(['kind', 'from', 'to']);
+/** Как `NORM_MAX` и `isNorm_` в `Code.gs`: личный план оплат на месяц — 0…50, до сотых. */
+const PLAN_MAX = 50;
+const PLAN_RULE = 'число от 0 до 50, не больше двух знаков после запятой';
+const isPlan = (v: unknown): v is number => typeof v === 'number' && v >= 0 && v <= PLAN_MAX && Math.round(v * 100) / 100 === v;
+
+type Transfer = Employee['transfers'][number];
+export type Failure = { error: string };
+
+/** Сотрудник из снимка вместе с причиной исключения из рейтинга (она приходит отдельно, из `getPrivate`). */
+export type StaffCurrent = Employee & { hiddenReason: string };
+
+/** Значения полей карточки: даты строками (`''` — нет даты), перевод — новая запись. */
+export interface StaffForm {
+  hireDate: string;
+  fireDate: string;
+  baseLevel: Level;
+  hiddenFromRating: boolean;
+  hiddenReason: string;
+  transferDate: string;
+  transferGroup: GroupCode | '';
+  /** личный план оплат на месяц, как в поле ввода (`''` — нет плана) */
+  paymentPlan: string;
+}
+
+/** Элемент `setStaff`: ключ — ФИО, дальше только изменённые поля. */
+export type StaffPatch = { name: string } & Partial<{
+  hireDate: DateStr | null;
+  fireDate: DateStr | null;
+  baseLevel: Level;
+  hiddenFromRating: boolean;
+  hiddenReason: string;
+  transfers: Transfer[];
+  paymentPlan: number | null;
+}>;
+
+export const formOf = (e: StaffCurrent): StaffForm => ({
+  hireDate: e.hireDate ?? '',
+  fireDate: e.fireDate ?? '',
+  baseLevel: e.baseLevel,
+  hiddenFromRating: e.hiddenFromRating,
+  hiddenReason: e.hiddenReason,
+  transferDate: '',
+  transferGroup: '',
+  paymentPlan: planText(e.paymentPlan),
+});
+
+/** План для поля ввода: `''` — нет плана. */
+export const planText = (v: number | null | undefined): string => (typeof v === 'number' ? String(v) : '');
+
+/** План из поля: пусто — `null`; запятая как точка; не число 0…50 до сотых — `'bad'`. */
+export function readPlan(raw: string): number | null | 'bad' {
+  const v = raw.trim().replace(',', '.');
+  if (v === '') return null;
+  if (!/^\d+(\.\d+)?$/.test(v)) return 'bad';
+  const n = Number(v);
+  return isPlan(n) ? n : 'bad';
+}
+
+/** Поиск без регистра и лишних пробелов по ФИО и короткому имени; пустой запрос — все. */
+export function filterStaff<T extends Pick<Employee, 'name' | 'shortName'>>(staff: T[], query: string): T[] {
+  const q = normalizeName(query);
+  if (q === '') return staff;
+  return staff.filter((e) => normalizeName(e.name).includes(q) || normalizeName(e.shortName).includes(q));
+}
+
+/** Пустая строка — нет даты (`null`); не дата — `'bad'`. */
+function readDate(raw: string): DateStr | null | 'bad' {
+  const v = raw.trim();
+  return v === '' ? null : parseDate(v, '') || 'bad';
+}
+
+/**
+ * Что отправить в `setStaff` по карточке: только изменённое. Приём — `hireDate`, увольнение — `fireDate`, отмена
+ * увольнения — `fireDate: null`; перевод добавляется к прежним (на ту же дату — заменяет). Скрытие из рейтинга без
+ * причины — ошибка: сервер её не примет, лучше сказать сразу.
+ */
+export function buildStaffPatch(current: StaffCurrent, form: StaffForm): StaffPatch | Failure {
+  const patch: StaffPatch = { name: current.name };
+
+  const hire = readDate(form.hireDate);
+  const fire = readDate(form.fireDate);
+  if (hire === 'bad') return { error: 'Дата приёма: ожидается дата вида 2026-11-09' };
+  if (fire === 'bad') return { error: 'Дата увольнения: ожидается дата вида 2026-11-09' };
+  if (hire !== current.hireDate) patch.hireDate = hire;
+  if (fire !== current.fireDate) patch.fireDate = fire;
+  if (hire !== null && fire !== null && fire <= hire) return { error: 'Увольнение должно быть позже приёма' };
+
+  if (form.baseLevel !== current.baseLevel) patch.baseLevel = form.baseLevel;
+
+  const plan = readPlan(form.paymentPlan);
+  if (plan === 'bad') return { error: `План оплат: ${PLAN_RULE}` };
+  if (plan !== (current.paymentPlan ?? null)) patch.paymentPlan = plan;
+
+  const reason = form.hiddenReason.trim();
+  if (form.hiddenFromRating) {
+    if (reason === '') return { error: 'Укажите причину исключения из рейтинга' };
+    if (reason.length > HIDDEN_REASON_MAX) return { error: `Причина длиннее ${HIDDEN_REASON_MAX} знаков` };
+    if (!current.hiddenFromRating) {
+      patch.hiddenFromRating = true;
+      patch.hiddenReason = reason;
+    } else if (reason !== current.hiddenReason) patch.hiddenReason = reason;
+  } else if (current.hiddenFromRating) patch.hiddenFromRating = false;
+
+  const transferDate = readDate(form.transferDate);
+  if (transferDate === 'bad') return { error: 'Дата перевода: ожидается дата вида 2026-11-09' };
+  if (transferDate !== null || form.transferGroup !== '') {
+    if (transferDate === null) return { error: 'Перевод: укажите дату' };
+    if (!GROUPS.includes(form.transferGroup as GroupCode)) return { error: 'Перевод: выберите группу' };
+    patch.transfers = [...current.transfers.filter((t) => t.date !== transferDate), { date: transferDate, group: form.transferGroup as GroupCode }]
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  return Object.keys(patch).length === 1 ? { error: 'Ничего не изменено' } : patch;
+}
+
+/** Строка таблицы «Уровни, даты приёма и план»: дата пустая — не задана; плана нет в строке — не меняется. */
+export interface BulkEdit {
+  baseLevel: Level;
+  hireDate: string;
+  paymentPlan?: string;
+}
+
+/**
+ * Изменения таблицы уровней и дат приёма всего штата: только изменённые поля изменённых строк. Первая ошибка
+ * останавливает всё; в тексте — номер строки (по порядку `staff`), без ФИО.
+ */
+export function bulkStaffPatches(staff: Employee[], edits: Record<string, BulkEdit>): { patches: StaffPatch[] } | Failure {
+  const patches: StaffPatch[] = [];
+  for (const [i, e] of staff.entries()) {
+    const edit = edits[e.id];
+    if (!edit) continue;
+    const hire = readDate(edit.hireDate);
+    if (hire === 'bad') return { error: `Строка ${i + 1}: дата приёма — ожидается дата вида 2026-11-09` };
+    if (hire !== null && e.fireDate !== null && e.fireDate <= hire) return { error: `Строка ${i + 1}: увольнение должно быть позже приёма` };
+    const plan = edit.paymentPlan === undefined ? undefined : readPlan(edit.paymentPlan);
+    if (plan === 'bad') return { error: `Строка ${i + 1}: план оплат — ${PLAN_RULE}` };
+    const patch: StaffPatch = { name: e.name };
+    if (edit.baseLevel !== e.baseLevel) patch.baseLevel = edit.baseLevel;
+    if (hire !== e.hireDate) patch.hireDate = hire;
+    if (plan !== undefined && plan !== (e.paymentPlan ?? null)) patch.paymentPlan = plan;
+    if (Object.keys(patch).length > 1) patches.push(patch);
+  }
+  return { patches };
+}
+
+/** Отсутствие из JSON штата: `to` можно опустить — без даты окончания. */
+export interface JsonAbsence { kind: Absence['kind']; from: DateStr; to?: DateStr | null }
+export type StaffItem = { name: string; group: GroupCode; absences?: JsonAbsence[] } & Partial<Omit<StaffPatch, 'transfers' | 'name'>>;
+
+/**
+ * Список для `setStaff` из JSON-файла. Проверка до отправки: группа из шести, даты, уровень, причина при скрытии,
+ * неизвестные поля, повтор ФИО. В тексте ошибок — только номер записи (1…N), без ФИО и без цитат из файла.
+ */
+export function parseStaffJson(text: string): StaffItem[] | Failure {
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return { error: 'Файл не похож на JSON' };
+  }
+  if (!Array.isArray(data) || data.length === 0) return { error: 'Ожидается непустой список записей: [ { "name": …, "group": … }, … ]' };
+
+  const seen = new Map<string, number>();
+  for (let i = 0; i < data.length; i++) {
+    const at = (why: string): Failure => ({ error: `Запись ${i + 1}: ${why}` });
+    const r: unknown = data[i];
+    if (typeof r !== 'object' || r === null || Array.isArray(r)) return at('ожидается объект');
+    const rec = r as Record<string, unknown>;
+    if (Object.keys(rec).some((k) => !JSON_KEYS.has(k))) return at('есть лишние поля');
+    if (typeof rec.name !== 'string' || rec.name.trim() === '') return at('нет ФИО');
+    if (!GROUPS.includes(rec.group as GroupCode)) return at(`группа должна быть одной из ${GROUPS.join(', ')}`);
+    for (const key of ['hireDate', 'fireDate'] as const) {
+      const v = rec[key];
+      if (v !== undefined && v !== null && (typeof v !== 'string' || parseDate(v, '') === '')) return at(`${key}: ожидается дата вида 2026-11-09 или null`);
+    }
+    if (typeof rec.hireDate === 'string' && typeof rec.fireDate === 'string' && rec.fireDate <= rec.hireDate) return at('увольнение должно быть позже приёма');
+    if (rec.baseLevel !== undefined && !LEVELS.includes(rec.baseLevel as Level)) return at(`baseLevel должен быть одним из ${LEVELS.join(', ')}`);
+    if (rec.hiddenFromRating !== undefined && typeof rec.hiddenFromRating !== 'boolean') return at('hiddenFromRating: ожидается true или false');
+    if (rec.hiddenReason !== undefined && (typeof rec.hiddenReason !== 'string' || rec.hiddenReason.length > HIDDEN_REASON_MAX)) return at('hiddenReason: текст не длиннее 200 знаков');
+    if (rec.hiddenFromRating === true && (typeof rec.hiddenReason !== 'string' || rec.hiddenReason.trim() === '')) return at('для исключения из рейтинга нужна причина');
+    if (rec.paymentPlan !== undefined && rec.paymentPlan !== null && !isPlan(rec.paymentPlan)) return at(`paymentPlan — ${PLAN_RULE}, или null`);
+    if (rec.absences !== undefined) {
+      const why = absencesError(rec.absences);
+      if (why) return at(why);
+    }
+
+    const key = normalizeName(rec.name);
+    const first = seen.get(key);
+    if (first !== undefined) return at(`ФИО повторяется (как в записи ${first})`);
+    seen.set(key, i + 1);
+  }
+  return data as StaffItem[];
+}
+
+const isDateStr = (v: unknown): v is DateStr => typeof v === 'string' && parseDate(v, '') === v;
+
+/** Ошибка в `absences` записи JSON или `null`: список объектов {kind, from, to?}. */
+function absencesError(list: unknown): string | null {
+  if (!Array.isArray(list)) return 'absences: ожидается список';
+  for (let j = 0; j < list.length; j++) {
+    const at = (why: string) => `отсутствие ${j + 1}: ${why}`;
+    const a: unknown = list[j];
+    if (typeof a !== 'object' || a === null || Array.isArray(a)) return at('ожидается объект');
+    const r = a as Record<string, unknown>;
+    if (Object.keys(r).some((k) => !ABSENCE_KEYS.has(k))) return at('есть лишние поля');
+    if (!KINDS.includes(r.kind as Absence['kind'])) return at(`kind должен быть одним из ${KINDS.join(', ')}`);
+    if (!isDateStr(r.from)) return at('from — дата вида 2026-12-01');
+    if (r.to !== undefined && r.to !== null && !isDateStr(r.to)) return at('to — дата вида 2026-12-01 или null');
+    if (typeof r.to === 'string' && r.to < r.from) return at('to раньше from');
+  }
+  return null;
+}
+
+/** Отсутствие из JSON с ФИО сотрудника: id известен только после `setStaff`. */
+export type NamedAbsence = JsonAbsence & { name: string };
+
+/** JSON штата → тело `setStaff` (без отсутствий: сервер их там не принимает) и отсутствия по ФИО. */
+export function splitStaffJson(items: StaffItem[]): { staff: Omit<StaffItem, 'absences'>[]; absences: NamedAbsence[] } {
+  return {
+    staff: items.map(({ absences: _, ...rest }) => rest),
+    absences: items.flatMap((i) => (i.absences ?? []).map((a) => ({ name: i.name, ...a }))),
+  };
+}
+
+/** Вызовы `setAbsence` по свежему штату; ФИО сравниваются нормализованными. */
+export function absenceCalls(list: NamedAbsence[], staff: Pick<Employee, 'id' | 'name'>[]): { employeeId: string; kind: Absence['kind']; from: DateStr; to: DateStr | null }[] {
+  const idOf = new Map(staff.map((e) => [normalizeName(e.name), e.id]));
+  return list.flatMap((a) => {
+    const employeeId = idOf.get(normalizeName(a.name));
+    return employeeId ? [{ employeeId, kind: a.kind, from: a.from, to: a.to ?? null }] : [];
+  });
+}
+
+export interface AbsenceForm {
+  kind: string;
+  from: string;
+  to: string;
+}
+
+/** Отсутствие для `setAbsence`: `to` пустой — без даты окончания (`null`). */
+export function buildAbsence(form: AbsenceForm): { kind: Absence['kind']; from: DateStr; to: DateStr | null } | Failure {
+  if (!KINDS.includes(form.kind as Absence['kind'])) return { error: 'Выберите тип отсутствия' };
+  const from = readDate(form.from);
+  const to = readDate(form.to);
+  if (from === null || from === 'bad') return { error: 'Начало: ожидается дата вида 2026-11-09' };
+  if (to === 'bad') return { error: 'Конец: ожидается дата вида 2026-11-09 или пусто' };
+  if (to !== null && to < from) return { error: 'Конец раньше начала' };
+  return { kind: form.kind as Absence['kind'], from, to };
+}

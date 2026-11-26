@@ -1,0 +1,285 @@
+import { describe, expect, test } from 'vitest';
+import {
+  absenceCalls, buildAbsence, buildStaffPatch, bulkStaffPatches, filterStaff, formOf, parseStaffJson, readPlan, splitStaffJson,
+  type StaffCurrent,
+} from './staffForm';
+
+const person = (over: Partial<StaffCurrent> = {}): StaffCurrent => ({
+  id: 'e1', name: 'Иванова Анна Сергеевна', shortName: 'Иванова А.', group: 'СР1', hireDate: null, fireDate: null,
+  baseLevel: 'experienced', hiddenFromRating: false, transfers: [], hiddenReason: '',
+  ...over,
+});
+
+describe('filterStaff', () => {
+  const staff = [person(), person({ id: 'e2', name: 'Петров Пётр Петрович', shortName: 'Петров П.' })];
+
+  test('без регистра, по ФИО и по короткому имени, лишние пробелы не мешают', () => {
+    expect(filterStaff(staff, 'ИВАНОВА').map((e) => e.id)).toEqual(['e1']);
+    expect(filterStaff(staff, 'пётр петр').map((e) => e.id)).toEqual(['e2']);
+    expect(filterStaff(staff, '  петров   п. ').map((e) => e.id)).toEqual(['e2']);
+  });
+
+  test('пустой запрос — все, нет совпадений — пусто', () => {
+    expect(filterStaff(staff, '   ')).toHaveLength(2);
+    expect(filterStaff(staff, 'сидоров')).toEqual([]);
+  });
+});
+
+describe('buildStaffPatch', () => {
+  const patch = (current: StaffCurrent, over: Partial<ReturnType<typeof formOf>>) =>
+    buildStaffPatch(current, { ...formOf(current), ...over });
+
+  test('приём: дата приёма уходит вместе с ФИО-ключом, остальное не трогается', () => {
+    expect(patch(person(), { hireDate: '2026-11-09' })).toEqual({ name: 'Иванова Анна Сергеевна', hireDate: '2026-11-09' });
+  });
+
+  test('увольнение — fireDate, отмена увольнения — fireDate: null', () => {
+    expect(patch(person(), { fireDate: '2026-11-12' })).toEqual({ name: 'Иванова Анна Сергеевна', fireDate: '2026-11-12' });
+    expect(patch(person({ fireDate: '2026-11-12' }), { fireDate: '' })).toEqual({ name: 'Иванова Анна Сергеевна', fireDate: null });
+  });
+
+  test('увольнение не позже приёма и дата не в формате — ошибка', () => {
+    expect(patch(person({ hireDate: '2026-11-09' }), { fireDate: '2026-11-09' })).toHaveProperty('error');
+    expect(patch(person(), { fireDate: '12.11.2026' })).toHaveProperty('error');
+    expect(patch(person(), { hireDate: '2026-02-30' })).toHaveProperty('error');
+  });
+
+  test('ничего не изменено — ошибка, а не пустой запрос', () => {
+    expect(patch(person(), {})).toEqual({ error: 'Ничего не изменено' });
+  });
+
+  test('уровень', () => {
+    expect(patch(person(), { baseLevel: 'rookie1' })).toEqual({ name: 'Иванова Анна Сергеевна', baseLevel: 'rookie1' });
+  });
+
+  test('перевод: добавляется к прежним, перевод на ту же дату заменяется, порядок по дате', () => {
+    const current = person({ transfers: [{ date: '2026-11-05', group: 'СР2' }, { date: '2026-11-16', group: 'СР3' }] });
+    expect(patch(current, { transferDate: '2026-11-10', transferGroup: 'СР5' })).toEqual({
+      name: 'Иванова Анна Сергеевна',
+      transfers: [{ date: '2026-11-05', group: 'СР2' }, { date: '2026-11-10', group: 'СР5' }, { date: '2026-11-16', group: 'СР3' }],
+    });
+    expect(patch(current, { transferDate: '2026-11-05', transferGroup: 'СР9' })).toMatchObject({
+      transfers: [{ date: '2026-11-05', group: 'СР9' }, { date: '2026-11-16', group: 'СР3' }],
+    });
+  });
+
+  test('перевод без даты или без группы — ошибка; группа вне шести — ошибка', () => {
+    expect(patch(person(), { transferDate: '', transferGroup: 'СР2' })).toHaveProperty('error');
+    expect(patch(person(), { transferDate: '2026-11-10', transferGroup: '' })).toHaveProperty('error');
+    expect(patch(person(), { transferDate: '2026-11-10', transferGroup: 'СР4' as never })).toHaveProperty('error');
+  });
+
+  test('исключение из рейтинга без причины — ошибка, с причиной — флаг и причина', () => {
+    expect(patch(person(), { hiddenFromRating: true, hiddenReason: '   ' })).toHaveProperty('error');
+    expect(patch(person(), { hiddenFromRating: true, hiddenReason: 'декрет' })).toEqual({
+      name: 'Иванова Анна Сергеевна', hiddenFromRating: true, hiddenReason: 'декрет',
+    });
+  });
+
+  test('причина длиннее 200 знаков — ошибка', () => {
+    expect(patch(person(), { hiddenFromRating: true, hiddenReason: 'я'.repeat(201) })).toHaveProperty('error');
+  });
+
+  test('возврат в рейтинг шлёт только флаг; смена причины при скрытом — только причина', () => {
+    const hidden = person({ hiddenFromRating: true, hiddenReason: 'декрет' });
+    expect(patch(hidden, { hiddenFromRating: false })).toEqual({ name: 'Иванова Анна Сергеевна', hiddenFromRating: false });
+    expect(patch(hidden, { hiddenReason: 'больничный по уходу' })).toEqual({ name: 'Иванова Анна Сергеевна', hiddenReason: 'больничный по уходу' });
+  });
+});
+
+describe('buildStaffPatch: личный план оплат на месяц', () => {
+  const patch = (current: StaffCurrent, paymentPlan: string) => buildStaffPatch(current, { ...formOf(current), paymentPlan });
+  const NAME = 'Иванова Анна Сергеевна';
+
+  test('число, дробь через запятую или точку; пусто снимает план', () => {
+    expect(patch(person(), '6')).toEqual({ name: NAME, paymentPlan: 6 });
+    expect(patch(person(), ' 6,5 ')).toEqual({ name: NAME, paymentPlan: 6.5 });
+    expect(patch(person(), '0')).toEqual({ name: NAME, paymentPlan: 0 });
+    expect(patch(person({ paymentPlan: 6 }), '')).toEqual({ name: NAME, paymentPlan: null });
+    expect(formOf(person({ paymentPlan: 2.5 })).paymentPlan).toBe('2.5');
+  });
+
+  test('тот же план — изменений нет', () => {
+    expect(patch(person({ paymentPlan: 6 }), '6')).toEqual({ error: 'Ничего не изменено' });
+  });
+
+  test('не число, больше 50, больше двух знаков, отрицательное — ошибка', () => {
+    for (const bad of ['abc', '51', '1.234', '-1', '6 шт']) {
+      expect(patch(person(), bad), bad).toEqual({ error: 'План оплат: число от 0 до 50, не больше двух знаков после запятой' });
+    }
+  });
+});
+
+describe('readPlan: поле плана (подсветка «изменено» в таблице сравнивает число, а не текст)', () => {
+  test('6,5 / 6.50 / « 6.5 » — одно и то же число; пусто — нет плана; мусор — bad', () => {
+    expect(readPlan('6,5')).toBe(6.5);
+    expect(readPlan('6.50')).toBe(6.5);
+    expect(readPlan(' 6.5 ')).toBe(6.5);
+    expect(readPlan('')).toBeNull();
+    expect(readPlan('abc')).toBe('bad');
+    expect(readPlan('51')).toBe('bad');
+  });
+});
+
+describe('parseStaffJson', () => {
+  const ok = [
+    { name: 'Тест Один', group: 'СР1' },
+    { name: 'Тест Два', group: 'СР5', hireDate: '2026-11-09', baseLevel: 'rookie1' },
+  ];
+
+  test('корректный список проходит как есть', () => {
+    expect(parseStaffJson(JSON.stringify(ok))).toEqual(ok);
+  });
+
+  test('личный план: число до сотых от 0 до 50 или null; иначе ошибка с номером записи', () => {
+    const plans = [{ name: 'Тест Один', group: 'СР1', paymentPlan: 6 }, { name: 'Тест Два', group: 'СР2', paymentPlan: null }];
+    expect(parseStaffJson(JSON.stringify(plans))).toEqual(plans);
+    for (const bad of ['6', 1.234, 51, -1, true]) {
+      expect(parseStaffJson(JSON.stringify([{ name: 'Тест Один', group: 'СР1', paymentPlan: bad }])), String(bad))
+        .toEqual({ error: 'Запись 1: paymentPlan — число от 0 до 50, не больше двух знаков после запятой, или null' });
+    }
+  });
+
+  test('не JSON и не список — ошибка без цитаты из файла', () => {
+    const broken = parseStaffJson('{"name": "Секрет Фамилия"');
+    expect(broken).toHaveProperty('error');
+    expect(JSON.stringify(broken)).not.toContain('Секрет');
+    expect(parseStaffJson('{"name": "Тест Один"}')).toHaveProperty('error');
+    expect(parseStaffJson('[]')).toHaveProperty('error');
+  });
+
+  test('группа вне шести: ошибка с номером записи, без ФИО', () => {
+    const r = parseStaffJson(JSON.stringify([ok[0], { name: 'Тест Чужой', group: 'СР4' }]));
+    expect(r).toHaveProperty('error');
+    const { error } = r as { error: string };
+    expect(error).toContain('Запись 2');
+    expect(error).not.toContain('Тест');
+  });
+
+  test('ФИО дважды (без учёта регистра и пробелов): ошибка с номерами обеих записей, без ФИО', () => {
+    const r = parseStaffJson(JSON.stringify([ok[0], ok[1], { name: ' тест   один', group: 'СР2' }]));
+    const { error } = r as { error: string };
+    expect(error).toContain('Запись 3');
+    expect(error).toContain('записи 1');
+    expect(error).not.toContain('Тест');
+  });
+
+  test('без ФИО или без группы, неизвестный ключ, плохая дата или уровень — ошибка с номером', () => {
+    for (const bad of [
+      { group: 'СР1' },
+      { name: 'Тест Три' },
+      { name: 'Тест Три', group: 'СР1', salary: 1 },
+      { name: 'Тест Три', group: 'СР1', hireDate: '9.11.2026' },
+      { name: 'Тест Три', group: 'СР1', baseLevel: 'senior' },
+      { name: 'Тест Три', group: 'СР1', hiddenFromRating: true },
+    ]) {
+      const { error } = parseStaffJson(JSON.stringify([ok[0], bad])) as { error: string };
+      expect(error, JSON.stringify(bad)).toContain('Запись 2');
+    }
+  });
+
+  test('скрытие с причиной и дата увольнения null принимаются', () => {
+    const list = [{ name: 'Тест Один', group: 'СР1', hiddenFromRating: true, hiddenReason: 'декрет', fireDate: null }];
+    expect(parseStaffJson(JSON.stringify(list))).toEqual(list);
+  });
+});
+
+describe('buildAbsence', () => {
+  test('отпуск с датами и бессрочное отсутствие (to пустой → null)', () => {
+    expect(buildAbsence({ kind: 'vacation', from: '2026-11-09', to: '2026-11-13' })).toEqual({ kind: 'vacation', from: '2026-11-09', to: '2026-11-13' });
+    expect(buildAbsence({ kind: 'sick', from: '2026-11-09', to: '' })).toEqual({ kind: 'sick', from: '2026-11-09', to: null });
+  });
+
+  test('нет начала, конец раньше начала, мусорная дата — ошибка', () => {
+    expect(buildAbsence({ kind: 'vacation', from: '', to: '' })).toHaveProperty('error');
+    expect(buildAbsence({ kind: 'vacation', from: '2026-11-09', to: '2026-11-08' })).toHaveProperty('error');
+    expect(buildAbsence({ kind: 'other', from: 'вчера', to: '' })).toHaveProperty('error');
+  });
+});
+
+describe('bulkStaffPatches: уровни и даты приёма всего штата одной формой', () => {
+  const staff = [
+    person({ id: 'e1', name: 'Тест Один' }),
+    person({ id: 'e2', name: 'Тест Два', baseLevel: 'rookie1', hireDate: '2026-10-28' }),
+    person({ id: 'e3', name: 'Тест Три', fireDate: '2026-11-10' }),
+  ];
+  const same = () => Object.fromEntries(staff.map((e) => [e.id, { baseLevel: e.baseLevel, hireDate: e.hireDate ?? '' }]));
+
+  test('ничего не меняли — ни одной записи', () => {
+    expect(bulkStaffPatches(staff, same())).toEqual({ patches: [] });
+  });
+
+  test('уходят только изменённые поля изменённых строк', () => {
+    const edits = { ...same(), e1: { baseLevel: 'rookie2' as const, hireDate: '2026-10-21' }, e2: { baseLevel: 'rookie1' as const, hireDate: '' } };
+    expect(bulkStaffPatches(staff, edits)).toEqual({
+      patches: [
+        { name: 'Тест Один', baseLevel: 'rookie2', hireDate: '2026-10-21' },
+        { name: 'Тест Два', hireDate: null },
+      ],
+    });
+  });
+
+  test('неверная дата — ошибка с номером строки, без ФИО, и ничего не уходит', () => {
+    const result = bulkStaffPatches(staff, { ...same(), e1: { baseLevel: 'rookie1', hireDate: '2026-10-21' }, e3: { baseLevel: 'experienced', hireDate: '31.10.2026' } });
+    expect(result).toEqual({ error: 'Строка 3: дата приёма — ожидается дата вида 2026-11-09' });
+  });
+
+  test('приём не раньше увольнения — ошибка', () => {
+    expect(bulkStaffPatches(staff, { ...same(), e3: { baseLevel: 'experienced', hireDate: '2026-11-10' } }))
+      .toEqual({ error: 'Строка 3: увольнение должно быть позже приёма' });
+  });
+
+  test('личный план: уходит только изменённый, пусто снимает, неверный — ошибка с номером строки', () => {
+    const withPlan = [staff[0], person({ id: 'e2', name: 'Тест Два', paymentPlan: 3 })];
+    const base = { e1: { baseLevel: 'experienced' as const, hireDate: '', paymentPlan: '' }, e2: { baseLevel: 'experienced' as const, hireDate: '', paymentPlan: '3' } };
+    expect(bulkStaffPatches(withPlan, base)).toEqual({ patches: [] });
+    expect(bulkStaffPatches(withPlan, { ...base, e1: { ...base.e1, paymentPlan: '6' }, e2: { ...base.e2, paymentPlan: '' } })).toEqual({
+      patches: [{ name: 'Тест Один', paymentPlan: 6 }, { name: 'Тест Два', paymentPlan: null }],
+    });
+    expect(bulkStaffPatches(withPlan, { ...base, e2: { ...base.e2, paymentPlan: 'много' } }))
+      .toEqual({ error: 'Строка 2: план оплат — число от 0 до 50, не больше двух знаков после запятой' });
+  });
+});
+
+describe('JSON штата: отсутствия', () => {
+  const emp = (id: string, name: string) => ({ id, name });
+  const rec = (absences: unknown) => [{ name: 'Тест Один', group: 'СР1', absences }];
+
+  test('absences: [{kind, from, to}] принимаются; to можно опустить или null', () => {
+    const list = rec([{ kind: 'vacation', from: '2026-12-14', to: '2026-12-25' }, { kind: 'sick', from: '2026-12-03' }, { kind: 'other', from: '2026-12-29', to: null }]);
+    expect(parseStaffJson(JSON.stringify(list))).toEqual(list);
+  });
+
+  test('ошибка с номером записи и отсутствия, без ФИО', () => {
+    const cases: [unknown, string][] = [
+      ['отпуск', 'absences: ожидается список'],
+      [[{ kind: 'trip', from: '2026-12-01' }], 'отсутствие 1: kind должен быть одним из vacation, sick, other'],
+      [[{ kind: 'sick', from: '2026-12-01' }, { kind: 'sick', from: '1 декабря' }], 'отсутствие 2: from — дата вида 2026-12-01'],
+      [[{ kind: 'sick', from: '2026-12-10', to: '2026-12-09' }], 'отсутствие 1: to раньше from'],
+      [[{ kind: 'sick', from: '2026-12-10', to: 'потом' }], 'отсутствие 1: to — дата вида 2026-12-01 или null'],
+      [[{ kind: 'sick', from: '2026-12-10', note: 'x' }], 'отсутствие 1: есть лишние поля'],
+    ];
+    for (const [absences, why] of cases) expect(parseStaffJson(JSON.stringify(rec(absences))), why).toEqual({ error: `Запись 1: ${why}` });
+  });
+
+  test('splitStaffJson: список для setStaff без отсутствий и отдельный список отсутствий по ФИО', () => {
+    const items = [
+      { name: 'Тест Один', group: 'СР1' as const, absences: [{ kind: 'vacation' as const, from: '2026-12-14', to: '2026-12-25' }] },
+      { name: 'Тест Два', group: 'СР2' as const },
+    ];
+    expect(splitStaffJson(items)).toEqual({
+      staff: [{ name: 'Тест Один', group: 'СР1' }, { name: 'Тест Два', group: 'СР2' }],
+      absences: [{ name: 'Тест Один', kind: 'vacation', from: '2026-12-14', to: '2026-12-25' }],
+    });
+  });
+
+  test('absenceCalls: ФИО → id сотрудника без учёта регистра и пробелов; to по умолчанию null', () => {
+    const staff = [emp('e7', ' тест  один')];
+    expect(absenceCalls([{ name: 'Тест Один', kind: 'sick', from: '2026-12-03' }], staff))
+      .toEqual([{ employeeId: 'e7', kind: 'sick', from: '2026-12-03', to: null }]);
+  });
+
+  test('absenceCalls: ФИО не нашлось в штате — пропуск (после setStaff такого не бывает)', () => {
+    expect(absenceCalls([{ name: 'Тест Никто', kind: 'sick', from: '2026-12-03', to: null }], [])).toEqual([]);
+  });
+});
