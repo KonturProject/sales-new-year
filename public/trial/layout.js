@@ -4,12 +4,12 @@ export const W = 2880, K = W / ART_W, H = Math.round(ART_H * K);
 export const P = (x, y) => ({ x: x * K, y: y * K });
 
 export const GROUPS = [
-  { id: 'СР1', name: 'Лев', color: '#c8473b', sheet: 'm1', still: 's1', home: [345, 312], door: [318, 262], coins: 14 },
-  { id: 'СР2', name: 'Скрудж', color: '#4f9a52', sheet: 'm2', still: 's2', home: [268, 530], door: [238, 470], coins: 21 },
-  { id: 'СР3', name: 'Гринч', color: '#e0a82e', sheet: 'm3', still: 's3', home: [1142, 292], door: [1164, 250], coins: 31 },
-  { id: 'СР5', name: 'Йода', color: '#454b66', sheet: 'm5', still: 's5', home: [1432, 462], door: [1452, 415], coins: 19 },
-  { id: 'СР6', name: 'Знайка', color: '#8a5cb0', sheet: 'm6', still: 's6', home: [330, 892], door: [302, 840], coins: 22 },
-  { id: 'СР9', name: 'Смурфетта', color: '#3f7fc4', sheet: 'm9', still: 's9', home: [1472, 762], door: [1492, 705], coins: 28 },
+  { id: 'СР1', name: 'Лев', color: '#c8473b', sheet: 'm1', home: [345, 312], door: [318, 262], coins: 14 },
+  { id: 'СР2', name: 'Скрудж', color: '#4f9a52', sheet: 'm2', home: [268, 530], door: [238, 470], coins: 21 },
+  { id: 'СР3', name: 'Гринч', color: '#e0a82e', sheet: 'm3', home: [1142, 292], door: [1164, 250], coins: 31 },
+  { id: 'СР5', name: 'Йода', color: '#454b66', sheet: 'm5', home: [1432, 462], door: [1452, 415], coins: 19 },
+  { id: 'СР6', name: 'Знайка', color: '#8a5cb0', sheet: 'm6', home: [330, 892], door: [302, 840], coins: 22 },
+  { id: 'СР9', name: 'Смурфетта', color: '#3f7fc4', sheet: 'm9', home: [1472, 762], door: [1492, 705], coins: 28 },
 ];
 
 // Путь от домика до прилавка: по дорожкам, мимо фонарей и скамеек

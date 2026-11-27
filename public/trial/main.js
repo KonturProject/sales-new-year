@@ -8,17 +8,21 @@ const rnd = (a, b) => a + Math.random() * (b - a);
 const wait = (scene, ms) => new Promise((r) => scene.time.delayedCall(ms, r));
 const tween = (scene, cfg) => new Promise((r) => scene.tweens.add({ ...cfg, onComplete: () => { cfg.onComplete?.(); r(); } }));
 const hex = (c) => Phaser.Display.Color.HexStringToColor(c).color;
+/** Картинки, которые не загрузились (и догрузились позже): видны в строке ?stats=1, чтобы проверка на чужом компьютере это показала. */
+const LOST = { missing: new Set(), recovered: new Set() };
+window.__lost = LOST;
+const SHEET = { frameWidth: 384, frameHeight: 512 };
 
 class Mascot {
   constructor(scene, g) {
     this.scene = scene; this.g = g;
     const p = P(...g.home);
-    const useSheet = scene.textures.exists(g.sheet);
-    this.sheet = useSheet;
-    this.shadow = scene.add.image(p.x, p.y, 'shadow').setDepth(D.pool).setAlpha(0.34).setScale(0.92, 0.6);
-    this.sprite = scene.add.sprite(p.x, p.y, useSheet ? g.sheet : g.still, useSheet ? 4 : undefined).setOrigin(0.5, useSheet ? 0.975 : 1);
-    const tex = this.sprite.frame;
-    this.base = useSheet ? 248 / tex.height : 204 / tex.height;
+    // лист не загрузился — маскот спрятан, пока лист не догрузится (вместо чёрного квадрата «нет текстуры»)
+    this.ready = scene.textures.exists(g.sheet);
+    this.sheet = true;
+    this.shadow = scene.add.image(p.x, p.y, 'shadow').setDepth(D.pool).setAlpha(0.34).setScale(0.92, 0.6).setVisible(this.ready);
+    this.sprite = scene.add.sprite(p.x, p.y, this.ready ? g.sheet : '__DEFAULT', this.ready ? 4 : undefined).setOrigin(0.5, 0.975).setVisible(this.ready);
+    this.base = 248 / SHEET.frameHeight;
     this.sprite.setScale(this.base);
     this.x = p.x; this.y = p.y; this.lift = 0; this.phase = rnd(0, 6); this.busy = false; this.run = 0; this.step = 0;
     this.sync();
@@ -27,7 +31,14 @@ class Mascot {
     this.sprite.setPosition(this.x, this.y - this.lift).setDepth(this.depthOverride ?? this.y);
     this.shadow.setPosition(this.x, this.y - 3).setScale(0.92 * (1 - Math.min(0.5, this.lift / 900)), 0.6 * (1 - Math.min(0.5, this.lift / 900)));
   }
-  pose(i) { if (this.sheet) this.sprite.setFrame(i); }
+  pose(i) { if (this.ready) this.sprite.setFrame(i); }
+  /** Лист догрузился: маскот появляется на своём месте. */
+  attach() {
+    if (this.ready) return;
+    this.ready = true;
+    this.sprite.setTexture(this.g.sheet, 4).setVisible(true);
+    this.shadow.setVisible(true);
+  }
   face(dir) { this.sprite.setFlipX(dir < 0); }
   idle() { this.pose(4); this.sprite.setFlipX(false).setRotation(0).setScale(this.base); }
   /** Бег по точкам мира; длина шага задаёт кадр, чтобы ноги не «скользили». */
@@ -62,15 +73,45 @@ class Square extends Phaser.Scene {
   constructor() { super('square'); }
 
   preload() {
-    this.load.on('loaderror', (f) => console.warn('нет картинки', f.key));
+    this.load.on('loaderror', (f) => { console.warn('нет картинки', f.key); LOST.missing.add(f.key); });
+    this.load.maxRetries = 3;
+    for (const f of this.files()) this.queueFile(f);
+  }
+
+  /** Все картинки сцены: при сбое догружаются по тому же списку. */
+  files() {
     const A = 'assets/';
-    this.load.image('plaza', A + 'plaza.jpg');
-    this.load.image('tree', A + 'tree.png');
-    TOYS.forEach((_, i) => this.load.image('toy' + i, `${A}toy-${String(i + 1).padStart(2, '0')}.png`));
-    for (let i = 1; i <= 10; i++) this.load.image('decor' + i, `${A}decor-${String(i).padStart(2, '0')}.png`);
-    for (const g of GROUPS) {
-      this.load.spritesheet(g.sheet, `${A}${g.sheet}.png`, { frameWidth: 384, frameHeight: 512 });
-    }
+    return [
+      { key: 'plaza', url: A + 'plaza.jpg' },
+      { key: 'tree', url: A + 'tree.png' },
+      ...TOYS.map((_, i) => ({ key: 'toy' + i, url: `${A}toy-${String(i + 1).padStart(2, '0')}.png` })),
+      ...Array.from({ length: 10 }, (_, i) => ({ key: 'decor' + (i + 1), url: `${A}decor-${String(i + 1).padStart(2, '0')}.png` })),
+      ...GROUPS.map((g) => ({ key: g.sheet, url: `${A}${g.sheet}.png`, sheet: true })),
+    ];
+  }
+
+  queueFile(f, suffix = '') {
+    if (f.sheet) this.load.spritesheet(f.key, f.url + suffix, SHEET);
+    else this.load.image(f.key, f.url + suffix);
+  }
+
+  /** Не загрузилось — ещё попытки через 2, 4, 6… секунд; догрузившийся маскот появляется. */
+  reloadLost(attempt = 1) {
+    const lost = this.files().filter((f) => !this.textures.exists(f.key));
+    if (!lost.length || attempt > 6) return;
+    this.time.delayedCall(2000 * attempt, () => {
+      for (const f of lost) this.queueFile(f, `?retry=${attempt}`);
+      this.load.once('complete', () => {
+        for (const f of lost) {
+          if (!this.textures.exists(f.key)) continue;
+          LOST.missing.delete(f.key); LOST.recovered.add(f.key);
+          const g = GROUPS.find((x) => x.sheet === f.key);
+          if (g) this.mascots[g.id]?.attach();
+        }
+        this.reloadLost(attempt + 1);
+      });
+      this.load.start();
+    });
   }
 
   create() {
@@ -83,6 +124,7 @@ class Square extends Phaser.Scene {
     this.tint = this.add.rectangle(W / 2, H / 2, W, H, 0xffffff, 1).setDepth(D.tint).setBlendMode('MULTIPLY');
     this.mascots = Object.fromEntries(GROUPS.map((g) => [g.id, new Mascot(this, g)]));
     this.addPlates();
+    this.reloadLost();
     this.addSnow();
     this.addSmoke();
 
@@ -546,7 +588,8 @@ if (QUERY.has('stats')) {
     all.push(avg); times = [];
     const r = window.__sq?.game.renderer, gl = r?.gl, ext = gl?.getExtension('WEBGL_debug_renderer_info');
     const gpu = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)).replace(/ANGLE \(|Direct3D.*$/g, '').slice(0, 46) : '';
-    box.textContent = `${Math.round(avg)} к/с · худшие ${Math.round(1000 / worst)} · минимум ${Math.round(Math.min(...all))} · ${gl ? 'WebGL' : 'Canvas'} · ${innerWidth}×${innerHeight}×${devicePixelRatio} · ${gpu}`;
+    const lost = [LOST.missing.size ? `нет картинки: ${[...LOST.missing].join(', ')}` : '', LOST.recovered.size ? `догружено: ${[...LOST.recovered].join(', ')}` : ''].filter(Boolean);
+    box.textContent = [`${Math.round(avg)} к/с · худшие ${Math.round(1000 / worst)} · минимум ${Math.round(Math.min(...all))} · ${gl ? 'WebGL' : 'Canvas'} · ${innerWidth}×${innerHeight}×${devicePixelRatio} · ${gpu}`, ...lost].join(' · ');
   }, 10000);
   box.textContent = 'Считаю кадры, 10 секунд…';
 }

@@ -21,9 +21,17 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #141a3a; fon
   background: linear-gradient(#5a3723, var(--wood-2)); border: 2px solid var(--gold); border-radius: 14px;
   box-shadow: 0 6px 0 #1c1009;
 }
+/* шапка снега: неровные сугробы из эллипсов и голубая тень снизу, а не ровная белая полоса */
 .sign::before {
-  content: ''; position: absolute; left: 10px; right: 10px; top: -11px; height: 17px; background: var(--snow);
-  border-radius: 12px 12px 9px 16px / 12px 12px 8px 6px;
+  content: ''; position: absolute; left: 4px; right: 4px; top: -13px; height: 22px;
+  background:
+    radial-gradient(ellipse 26px 11px at 7% 78%, #eef1ff 94%, transparent 100%),
+    radial-gradient(ellipse 40px 15px at 24% 62%, #f7f8ff 94%, transparent 100%),
+    radial-gradient(ellipse 30px 12px at 43% 72%, #eef1ff 94%, transparent 100%),
+    radial-gradient(ellipse 46px 16px at 62% 56%, #ffffff 94%, transparent 100%),
+    radial-gradient(ellipse 34px 13px at 83% 68%, #f4f6ff 94%, transparent 100%),
+    radial-gradient(ellipse 20px 10px at 96% 84%, #e8ecff 94%, transparent 100%);
+  filter: drop-shadow(0 2px 0 rgb(132 140 214 / 70%)) drop-shadow(0 1px 2px rgb(20 26 58 / 45%));
 }
 .sign-title { font-family: Marmelad, Nunito, sans-serif; font-size: 25px; line-height: 1.15; color: var(--cream); }
 .sign-sub { font-size: 15px; font-weight: 700; color: #f0d9b0; }
